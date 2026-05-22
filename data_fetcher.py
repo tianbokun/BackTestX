@@ -255,9 +255,19 @@ def fetch_etf_history(
     except Exception as e:
         err = e
 
+    # 降级: 尝试用净值 API (QDII ETF 不走 kline)
+    try:
+        nav_df = fetch_open_fund_nav(symbol=symbol)
+        if not nav_df.empty:
+            nav_df = nav_df.rename(columns={"单位净值": "收盘"})
+            _write_cache(ck, nav_df)
+            return _filter_by_date(nav_df, start_date, end_date)
+    except Exception as nav_err:
+        err = nav_err
+
     raise ConnectionError(
         f"无法获取ETF {symbol} 的数据。可能是代码不存在、类型选择有误或网络波动。"
-        f"({err})"
+        f"已尝试 kline 和基金净值两种路径均失败。({err})"
     )
 
 
@@ -319,8 +329,19 @@ def fetch_lof_history(
             time.sleep(2)
             continue
 
+    # 降级: LOF + QDII 类走净值 API
+    try:
+        nav_df = fetch_open_fund_nav(symbol=symbol)
+        if not nav_df.empty:
+            nav_df = nav_df.rename(columns={"单位净值": "收盘"})
+            _write_cache(ck, nav_df)
+            return _filter_by_date(nav_df, start_date, end_date)
+    except Exception as nav_err:
+        err = nav_err
+
     raise ConnectionError(
-        f"无法获取LOF {symbol} 的数据。({err})"
+        f"无法获取LOF {symbol} 的数据。可能是不支持的 LOF 代码或 QDII 基金。"
+        f"已尝试 kline 和基金净值两种路径均失败。({err})"
     )
 
 
@@ -414,21 +435,47 @@ def fetch_history(
     if end_date is None:
         end_date = datetime.now().strftime("%Y%m%d")
 
-    fetchers = {
-        "stock": fetch_stock_history,
-        "etf": fetch_etf_history,
-        "lof": fetch_lof_history,
-        "open_fund": lambda symbol, start_date, end_date, **kw: fetch_open_fund_nav(
-            symbol=symbol, indicator=kw.get("indicator", "单位净值走势")
-        ),
-        "index": fetch_index_history,
-    }
+    def _try_fetch(ft: str) -> Optional[pd.DataFrame]:
+        """尝试用指定的资产类型获取数据, 失败返回 None"""
+        try:
+            if ft == "open_fund":
+                df = fetch_open_fund_nav(
+                    symbol=symbol, indicator=kwargs.get("indicator", "单位净值走势")
+                )
+                if not df.empty:
+                    df = df.rename(columns={"单位净值": "收盘"})
+                    return _filter_by_date(df, start_date, end_date)
+                return None
+            f = {
+                "stock": fetch_stock_history,
+                "etf": fetch_etf_history,
+                "lof": fetch_lof_history,
+                "index": fetch_index_history,
+            }.get(ft)
+            if f is None:
+                return None
+            return f(symbol=symbol, start_date=start_date, end_date=end_date, **kwargs)
+        except Exception:
+            return None
 
-    fetcher = fetchers.get(asset_type)
-    if fetcher is None:
-        raise ValueError(f"不支持的资产类型: {asset_type}")
+    # 1. 按用户选择的类型获取
+    result = _try_fetch(asset_type)
+    if result is not None and not result.empty:
+        return result
 
-    return fetcher(symbol=symbol, start_date=start_date, end_date=end_date, **kwargs)
+    # 2. 自动跨类型 fallback (先试净值最通用, 再试其他类型)
+    fallback_order = ["open_fund", "etf", "lof", "stock", "index"]
+    for ft in fallback_order:
+        if ft == asset_type:
+            continue
+        result = _try_fetch(ft)
+        if result is not None and not result.empty:
+            return result
+
+    raise ConnectionError(
+        f"无法获取 {symbol} 的数据。已尝试多种数据源均失败。\n"
+        f"建议: 确认代码正确, 或在侧边栏尝试切换资产类型。"
+    )
 
 
 def get_price_series(df: pd.DataFrame) -> Optional[pd.Series]:
