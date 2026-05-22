@@ -1,0 +1,62 @@
+{
+  "symbol": "161130",
+  "total_start": "2020-01-01",
+  "total_end": "2025-12-31",
+  "n_folds": 3,
+  "param_grid": {
+    "X": [
+      0.5,
+      1.0,
+      2.0
+    ],
+    "Y": [
+      3000,
+      5000,
+      10000
+    ]
+  },
+  "best_params_overall": {
+    "X": 2.0,
+    "Y": 3000
+  },
+  "avg_val_return": 27.47,
+  "timestamp": "20260522_160407",
+  "folds": [
+    {
+      "fold_id": 0,
+      "train_start": "2020-01-02",
+      "train_end": "2020-01-01",
+      "val_start": "2020-01-02",
+      "val_end": "2022-01-01",
+      "best_params": {
+        "X": 2.0,
+        "Y": 3000
+      },
+      "best_val_return": 33.54
+    },
+    {
+      "fold_id": 1,
+      "train_start": "2020-01-02",
+      "train_end": "2021-12-31",
+      "val_start": "2022-01-01",
+      "val_end": "2024-01-01",
+      "best_params": {
+        "X": 0.5,
+        "Y": 3000
+      },
+      "best_val_return": 27.16
+    },
+    {
+      "fold_id": 2,
+      "train_start": "2020-01-02",
+      "train_end": "2023-12-31",
+      "val_start": "2024-01-01",
+      "val_end": "2025-12-31",
+      "best_params": {
+        "X": 2.0,
+        "Y": 3000
+      },
+      "best_val_return": 23.88
+    }
+  ]
+}

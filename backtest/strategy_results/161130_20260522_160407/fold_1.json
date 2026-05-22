@@ -1,0 +1,12 @@
+{
+  "fold_id": 1,
+  "train_start": "2020-01-02",
+  "train_end": "2021-12-31",
+  "val_start": "2022-01-01",
+  "val_end": "2024-01-01",
+  "best_params": {
+    "X": 0.5,
+    "Y": 3000
+  },
+  "best_val_return": 27.16
+}
