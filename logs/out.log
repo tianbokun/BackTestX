@@ -42,3 +42,12 @@
 2026-05-22 14:40:49:   Network URL: http://172.28.79.193:8501
 2026-05-22 14:40:49:   External URL: http://58.248.107.102:8501
 2026-05-22 14:40:49: 
+2026-05-22 14:50:12:   Stopping...
+2026-05-22 14:50:14: [start_streamlit] Port 8501 is available
+2026-05-22 14:50:23: 
+2026-05-22 14:50:23:   You can now view your Streamlit app in your browser.
+2026-05-22 14:50:23: 
+2026-05-22 14:50:23:   Local URL: http://localhost:8501
+2026-05-22 14:50:23:   Network URL: http://172.28.79.193:8501
+2026-05-22 14:50:23:   External URL: http://58.248.107.102:8501
+2026-05-22 14:50:23: 

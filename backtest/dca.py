@@ -144,6 +144,7 @@ def run_dca_backtest(
     frequency: str = "monthly",
     amount: float = 1000,
     day: int = 1,
+    max_total: float = 0,
 ) -> dict:
     """
     执行定投回测
@@ -162,6 +163,8 @@ def run_dca_backtest(
         平均每日投入金额 (实际每期投入 = amount × 对应频率的交易日乘数)
     day : int
         每月/每季的哪一天 (1-28); 仅 monthly/quarterly/yearly 生效
+    max_total : float
+        总投资上限, 达到后停止定投; 0 表示不设上限
 
     Returns
     -------
@@ -177,121 +180,124 @@ def run_dca_backtest(
             "invested_series": pd.Series,    # 累计投入曲线
         }
     """
-    # 标准化日期
     start_date = start_date.replace("-", "")
     end_date = end_date.replace("-", "")
     start_ts = pd.Timestamp(start_date)
     end_ts = pd.Timestamp(end_date)
 
-    # 根据频率放大每期投入: amount 是日均投入
     period_amount = amount * DAILY_MULTIPLIER.get(frequency, 22)
+    cap_hit = max_total > 0
 
-    # 过滤价格序列到回测区间
     prices = price_series.sort_index().dropna()
     prices = prices[(prices.index >= start_ts) & (prices.index <= end_ts)]
 
     if len(prices) == 0:
         return {
-            "total_invested": 0,
-            "final_value": 0,
-            "total_return_pct": 0,
-            "annualized_return_pct": 0,
-            "records": pd.DataFrame(),
-            "nav_series": prices,
+            "max_total": max_total, "strategy": "", "total_invested": 0,
+            "final_value": 0, "total_return_pct": 0, "annualized_return_pct": 0,
+            "records": pd.DataFrame(), "nav_series": prices,
             "portfolio_series": pd.Series(dtype=float),
             "invested_series": pd.Series(dtype=float),
+            "final_price": 0, "total_shares": 0, "num_investments": 0,
+            "cap_hit": False,
         }
 
-    # 生成定投日期
     invest_dates = _get_invest_dates(
         prices.index, start_date, end_date, frequency, day
     )
 
     if len(invest_dates) == 0:
         return {
-            "total_invested": 0,
-            "final_value": 0,
-            "total_return_pct": 0,
-            "annualized_return_pct": 0,
-            "records": pd.DataFrame(),
-            "nav_series": prices,
+            "max_total": max_total, "strategy": "", "total_invested": 0,
+            "final_value": 0, "total_return_pct": 0, "annualized_return_pct": 0,
+            "records": pd.DataFrame(), "nav_series": prices,
             "portfolio_series": pd.Series(dtype=float),
             "invested_series": pd.Series(dtype=float),
+            "final_price": 0, "total_shares": 0, "num_investments": 0,
+            "cap_hit": False,
         }
 
-    # 计算每笔交易
-    records = []
-    transactions = []
-    total_shares = 0.0
+    invest_entries = []
     total_invested = 0.0
-    cash_flows = []  # for XIRR
+    total_shares = 0.0
 
     for inv_date in invest_dates:
         price = prices.loc[inv_date]
-        shares = period_amount / price
+        actual = period_amount
+        if cap_hit and total_invested + actual > max_total:
+            actual = max_total - total_invested
+            if actual <= 0:
+                break
+        shares = actual / price
         total_shares += shares
-        total_invested += period_amount
+        total_invested += actual
+        invest_entries.append((inv_date, actual, price))
+
+    records = []
+    cash_flows = []
+    cum_shares = 0.0
+    cum_invested = 0.0
+    for inv_date, actual, price in invest_entries:
+        shares = actual / price
+        cum_shares += shares
+        cum_invested += actual
         records.append({
             "日期": inv_date,
             "价格": round(price, 4),
             "买入份额": round(shares, 4),
-            "累计份额": round(total_shares, 4),
-            "投入金额": round(period_amount, 2),
-            "累计投入": round(total_invested, 2),
+            "累计份额": round(cum_shares, 4),
+            "投入金额": round(actual, 2),
+            "累计投入": round(cum_invested, 2),
         })
-        transactions.append((inv_date, period_amount, price, shares))
-        cash_flows.append((inv_date.to_pydatetime(), -period_amount))
+        cash_flows.append((inv_date.to_pydatetime(), -actual))
 
-    # 终值
     final_price = prices.iloc[-1]
     final_value = total_shares * final_price
-    total_return = (final_value - total_invested) / total_invested * 100
-
-    # 现金流: 最终市值记为收回
+    total_return = (final_value - total_invested) / total_invested * 100 if total_invested > 0 else 0
     cash_flows.append((prices.index[-1].to_pydatetime(), final_value))
-
-    # XIRR 年化
     annualized = _xirr(cash_flows) * 100
-
     records_df = pd.DataFrame(records)
 
-    # 生成市值曲线 (每天)
-    nav_all = prices  # 每日净值
-
-    # 正确计算: 每天按历史累积份额计算市值
     portfolio_values = []
     invested_values = []
     cum_shares = 0.0
     cum_invested = 0.0
     inv_idx = 0
+    inv_count = len(invest_entries)
 
     for date_idx, price in prices.items():
-        if inv_idx < len(invest_dates) and date_idx >= invest_dates[inv_idx]:
-            while inv_idx < len(invest_dates) and date_idx >= invest_dates[inv_idx]:
-                cum_shares += period_amount / prices.loc[invest_dates[inv_idx]]
-                cum_invested += period_amount
+        if inv_idx < inv_count and date_idx >= invest_entries[inv_idx][0]:
+            while inv_idx < inv_count and date_idx >= invest_entries[inv_idx][0]:
+                actual = invest_entries[inv_idx][1]
+                cum_shares += actual / invest_entries[inv_idx][2]
+                cum_invested += actual
                 inv_idx += 1
-        mv = cum_shares * price
-        portfolio_values.append(mv)
+        portfolio_values.append(cum_shares * price)
         invested_values.append(cum_invested)
 
     portfolio_series = pd.Series(portfolio_values, index=prices.index)
     invested_series = pd.Series(invested_values, index=prices.index)
 
     freq_label = freq_map.get(frequency, frequency)
+    strategy_name = f"{freq_label}定额({period_amount:.0f}元/期)"
+    if cap_hit and max_total > 0:
+        strategy_name += f"·上限{max_total:.0f}元"
+
     return {
-        "strategy": f"{freq_label}定额({period_amount:.0f}元/期)",
+        "max_total": max_total,
+        "cap_hit": cap_hit and total_invested >= max_total,
+        "strategy": strategy_name,
         "total_invested": round(total_invested, 2),
         "final_value": round(final_value, 2),
         "total_return_pct": round(total_return, 2),
         "annualized_return_pct": round(annualized, 2),
         "records": records_df,
-        "nav_series": nav_all,
+        "nav_series": prices,
         "portfolio_series": portfolio_series,
         "invested_series": invested_series,
         "final_price": round(final_price, 4),
         "total_shares": round(total_shares, 4),
-        "num_investments": len(invest_dates),
+        "num_investments": len(invest_entries),
     }
 
 

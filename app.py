@@ -64,6 +64,11 @@ dca_day = st.sidebar.number_input(
     help="仅对 每月/每季度/每年 生效",
 )
 
+dca_max_total = st.sidebar.number_input(
+    "总投资上限 (元)", min_value=0, value=0, step=10000,
+    help="累计投入达到此金额后停止定投。0 表示不设上限。"
+)
+
 st.sidebar.markdown("### 回测区间")
 today = date.today()
 
@@ -160,7 +165,7 @@ st.plotly_chart(fig_price, use_container_width=True)
 #  回测执行 (多策略)
 # ══════════════════════════════════════════
 
-def _run_all_backtests(price_series, start_date, end_date, amount, freqs, day):
+def _run_all_backtests(price_series, start_date, end_date, amount, freqs, day, max_total=0):
     """运行所有选定策略, 返回 {strategy_name: result}"""
     results = {}
     for f in freqs:
@@ -171,6 +176,7 @@ def _run_all_backtests(price_series, start_date, end_date, amount, freqs, day):
             frequency=f,
             amount=float(amount),
             day=day,
+            max_total=float(max_total),
         )
         if not r["records"].empty:
             results[r["strategy"]] = r
@@ -189,18 +195,23 @@ if run_btn:
     try:
         with st.spinner("执行回测对比..."):
             results = _run_all_backtests(price_series, start_str, end_str,
-                                         dca_amount, dca_freqs, dca_day)
+                                         dca_amount, dca_freqs, dca_day,
+                                         max_total=dca_max_total)
 
             # 一次性投入
             if include_lump_sum:
-                total_dca_amount = 0
-                if results:
+                if dca_max_total > 0:
+                    lump_amount = float(dca_max_total)
+                elif results:
                     sample = next(iter(results.values()))
-                    total_dca_amount = sample["total_invested"]
-                lump = run_lump_sum_backtest(price_series, start_str, end_str,
-                                             total_dca_amount)
-                if lump["total_invested"] > 0:
-                    results["一次性投入"] = lump
+                    lump_amount = sample["total_invested"]
+                else:
+                    lump_amount = 0
+                if lump_amount > 0:
+                    lump = run_lump_sum_backtest(price_series, start_str, end_str,
+                                                 lump_amount)
+                    if lump["total_invested"] > 0:
+                        results["一次性投入"] = lump
     except Exception as e:
         st.error(f"回测执行失败: {e}")
         st.stop()
