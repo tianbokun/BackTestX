@@ -126,6 +126,17 @@ def _xirr(transactions):
     return rate
 
 
+# ── 日均乘数: amount 理解为"日均投入", 各频率按交易日天数放大 ──
+DAILY_MULTIPLIER = {
+    "daily": 1,
+    "weekly": 5,
+    "biweekly": 10,
+    "monthly": 22,
+    "quarterly": 66,
+    "yearly": 252,
+}
+
+
 def run_dca_backtest(
     price_series: pd.Series,
     start_date: str,
@@ -146,11 +157,11 @@ def run_dca_backtest(
     end_date : str
         定投结束日期 (持有到这一天)
     frequency : str
-        "weekly" / "biweekly" / "monthly" / "quarterly" / "yearly"
+        "daily" / "weekly" / "biweekly" / "monthly" / "quarterly" / "yearly"
     amount : float
-        每期定投金额
+        平均每日投入金额 (实际每期投入 = amount × 对应频率的交易日乘数)
     day : int
-        每月/每季的哪一天 (1-28)
+        每月/每季的哪一天 (1-28); 仅 monthly/quarterly/yearly 生效
 
     Returns
     -------
@@ -171,6 +182,9 @@ def run_dca_backtest(
     end_date = end_date.replace("-", "")
     start_ts = pd.Timestamp(start_date)
     end_ts = pd.Timestamp(end_date)
+
+    # 根据频率放大每期投入: amount 是日均投入
+    period_amount = amount * DAILY_MULTIPLIER.get(frequency, 22)
 
     # 过滤价格序列到回测区间
     prices = price_series.sort_index().dropna()
@@ -214,19 +228,19 @@ def run_dca_backtest(
 
     for inv_date in invest_dates:
         price = prices.loc[inv_date]
-        shares = amount / price
+        shares = period_amount / price
         total_shares += shares
-        total_invested += amount
+        total_invested += period_amount
         records.append({
             "日期": inv_date,
             "价格": round(price, 4),
             "买入份额": round(shares, 4),
             "累计份额": round(total_shares, 4),
-            "投入金额": amount,
+            "投入金额": round(period_amount, 2),
             "累计投入": round(total_invested, 2),
         })
-        transactions.append((inv_date, amount, price, shares))
-        cash_flows.append((inv_date.to_pydatetime(), -amount))
+        transactions.append((inv_date, period_amount, price, shares))
+        cash_flows.append((inv_date.to_pydatetime(), -period_amount))
 
     # 终值
     final_price = prices.iloc[-1]
@@ -243,7 +257,6 @@ def run_dca_backtest(
 
     # 生成市值曲线 (每天)
     nav_all = prices  # 每日净值
-    portfolio_value = total_shares * nav_all  # 这个不对, 会随时间变化
 
     # 正确计算: 每天按历史累积份额计算市值
     portfolio_values = []
@@ -254,10 +267,9 @@ def run_dca_backtest(
 
     for date_idx, price in prices.items():
         if inv_idx < len(invest_dates) and date_idx >= invest_dates[inv_idx]:
-            # 发现投资日期在这个日期或之前
             while inv_idx < len(invest_dates) and date_idx >= invest_dates[inv_idx]:
-                cum_shares += amount / prices.loc[invest_dates[inv_idx]]
-                cum_invested += amount
+                cum_shares += period_amount / prices.loc[invest_dates[inv_idx]]
+                cum_invested += period_amount
                 inv_idx += 1
         mv = cum_shares * price
         portfolio_values.append(mv)
@@ -266,8 +278,9 @@ def run_dca_backtest(
     portfolio_series = pd.Series(portfolio_values, index=prices.index)
     invested_series = pd.Series(invested_values, index=prices.index)
 
+    freq_label = freq_map.get(frequency, frequency)
     return {
-        "strategy": f"{freq_map.get(frequency, frequency)}定额",
+        "strategy": f"{freq_label}定额({period_amount:.0f}元/期)",
         "total_invested": round(total_invested, 2),
         "final_value": round(final_value, 2),
         "total_return_pct": round(total_return, 2),

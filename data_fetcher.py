@@ -3,14 +3,15 @@
 支持: A股个股, ETF基金, LOF基金, 开放式基金, 指数
 
 特点:
-  - 自动重试 (连接断开时指数退避, 最多 5 次)
-  - 本地文件缓存 (每日刷新, 减少重复请求)
-  - 备用数据源 (主源失败时自动切换)
+  - 自动重试 + 备用数据源
+  - 本地文件缓存 (按 symbol 缓存全量数据, 30 天过期)
+  - 多次查询同一 symbol 不同日期区间不再重新请求
 """
 
 import os
 import json
 import hashlib
+import time
 from typing import Optional, Literal
 from datetime import datetime, date
 from pathlib import Path
@@ -21,15 +22,14 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 
 import akshare as ak
 
-# ── 资产类型 ──
 AssetType = Literal["stock", "etf", "lof", "open_fund", "index"]
 
-# ── 缓存配置 ──
+# ── 缓存 ──
 CACHE_DIR = Path(__file__).parent / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
-CACHE_EXPIRE_SECS = 12 * 3600  # 12 小时
+CACHE_EXPIRE_SECS = 30 * 24 * 3600  # 30 天
 
-# ── HTTP 会话 (模拟浏览器, 避免被反爬) ──
+# ── HTTP 会话 ──
 _SESSION = requests.Session()
 _SESSION.headers.update({
     "User-Agent": (
@@ -38,9 +38,7 @@ _SESSION.headers.update({
         "Chrome/125.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     "Referer": "https://quote.eastmoney.com/",
-    "Connection": "keep-alive",
 })
 
 _CONNECT_ERRORS = (
@@ -49,107 +47,86 @@ _CONNECT_ERRORS = (
     requests.exceptions.ChunkedEncodingError,
 )
 
+_FULL_START = "19900101"
+_FULL_END   = "20500101"
 
-# ── 工具函数 ──
 
-def _validate_date(date_str: str) -> str:
-    if len(date_str) != 8:
-        raise ValueError(f"日期格式错误, 应为 YYYYMMDD, 实际: {date_str}")
-    return date_str
-
+# ══════════════════════════════════════════
+#  缓存工具
+# ══════════════════════════════════════════
 
 def _cache_key(*parts: str) -> str:
-    raw = "_".join(parts)
-    return hashlib.md5(raw.encode()).hexdigest()
+    return hashlib.md5("_".join(parts).encode()).hexdigest()
 
 
-def _cache_path(cache_key: str) -> Path:
-    return CACHE_DIR / f"{cache_key}.csv"
+def _cache_path(key: str) -> Path:
+    return CACHE_DIR / f"{key}.parquet"
 
 
-def _read_cache(cache_key: str) -> Optional[pd.DataFrame]:
-    path = _cache_path(cache_key)
+def _read_cache(key: str) -> Optional[pd.DataFrame]:
+    path = _cache_path(key)
     if not path.exists():
         return None
     age = datetime.now().timestamp() - path.stat().st_mtime
     if age > CACHE_EXPIRE_SECS:
         return None
     try:
-        df = pd.read_csv(path, index_col=0, parse_dates=True)
-        return df
+        return pd.read_parquet(path)
     except Exception:
         return None
 
 
-def _write_cache(cache_key: str, df: pd.DataFrame):
+def _write_cache(key: str, df: pd.DataFrame):
     if df.empty:
         return
     try:
-        df.to_csv(_cache_path(cache_key))
+        df.to_parquet(_cache_path(key))
     except Exception:
         pass
 
 
-def _clear_expired_cache():
+def _filter_by_date(df: pd.DataFrame, start_date: str, end_date: str) -> pd.DataFrame:
+    """从已缓存的 DataFrame 中截取日期区间, 返回副本"""
+    if df.empty:
+        return df
+    if not isinstance(df.index, pd.DatetimeIndex):
+        return df
+    start = pd.Timestamp(start_date)
+    end = pd.Timestamp(end_date)
+    return df[(df.index >= start) & (df.index <= end)].copy()
+
+
+def _clear_expired():
     now = datetime.now().timestamp()
-    for f in CACHE_DIR.glob("*.csv"):
+    for f in CACHE_DIR.glob("*.parquet"):
         if now - f.stat().st_mtime > CACHE_EXPIRE_SECS * 2:
             f.unlink(missing_ok=True)
 
 
-def _build_retry_decorator():
-    return retry(
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        retry=retry_if_exception_type(_CONNECT_ERRORS),
-        reraise=True,
-    )
+# ══════════════════════════════════════════
+#  HTTP 请求 (tenacity 重试)
+# ══════════════════════════════════════════
 
-
-@_build_retry_decorator()
-def _request_json(url: str, params: dict) -> dict:
-    """带重试和超时的 JSON API 请求"""
-    r = _SESSION.get(url, params=params, timeout=15)
+@retry(
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception_type(_CONNECT_ERRORS),
+    reraise=True,
+)
+def _req_json(url: str, params: dict) -> dict:
+    r = _SESSION.get(url, params=params, timeout=20)
     r.raise_for_status()
     return r.json()
 
 
 # ══════════════════════════════════════════
-#  内部: 直接调用 East Money API (绕过 AKShare)
-#  原因: AKShare 没有 retry/custom headers, 连接不稳时会直接抛异常
+#  内部: 直接调用 East Money API
 # ══════════════════════════════════════════
 
-def _em_stock_hist(
-    symbol: str,
-    period: str = "daily",
-    start_date: str = "20000101",
-    end_date: str = "20500101",
-    adjust: str = "qfq",
-) -> pd.DataFrame:
-    """
-    直接调用东方财富 API 获取 A 股历史行情
-    比 AKShare 的 stock_zh_a_hist 更稳定 (自定义 headers + retry)
-    """
-    market_code = 1 if symbol.startswith("6") else 0
-    adjust_map = {"qfq": "1", "hfq": "2", "": "0"}
-    period_map = {"daily": "101", "weekly": "102", "monthly": "103"}
-
-    url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
-    params = {
-        "fields1": "f1,f2,f3,f4,f5,f6",
-        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-        "ut": "7eea3edcaed734bea9cbfc24409ed989",
-        "klt": period_map.get(period, "101"),
-        "fqt": adjust_map.get(adjust, "0"),
-        "secid": f"{market_code}.{symbol}",
-        "beg": start_date,
-        "end": end_date,
-    }
-
-    data_json = _request_json(url, params)
+def _parse_em_klines(data_json: dict, symbol: str) -> pd.DataFrame:
+    """解析东方财富 kline 返回为 DataFrame"""
     if not (data_json.get("data") and data_json["data"].get("klines")):
         return pd.DataFrame()
-
     rows = [item.split(",") for item in data_json["data"]["klines"]]
     cols = ["日期", "开盘", "收盘", "最高", "最低", "成交量", "成交额", "振幅", "涨跌幅", "涨跌额", "换手率"]
     df = pd.DataFrame(rows, columns=cols[:len(rows[0])])
@@ -163,42 +140,24 @@ def _em_stock_hist(
     return df
 
 
-def _em_etf_hist(
-    symbol: str,
-    period: str = "daily",
-    start_date: str = "20000101",
-    end_date: str = "20500101",
-    adjust: str = "qfq",
-) -> pd.DataFrame:
-    """东方财富 ETF 历史行情"""
+def _em_kline(symbol: str, market_code: int, period: str, adjust: str,
+              start: str = _FULL_START, end: str = _FULL_END) -> pd.DataFrame:
+    """通用东方财富 kline API"""
+    period_map = {"daily": "101", "weekly": "102", "monthly": "103"}
+    adjust_map = {"qfq": "1", "hfq": "2", "": "0"}
+    url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
     params = {
         "fields1": "f1,f2,f3,f4,f5,f6",
         "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
         "ut": "7eea3edcaed734bea9cbfc24409ed989",
+        "klt": period_map.get(period, "101"),
+        "fqt": adjust_map.get(adjust, "0"),
+        "secid": f"{market_code}.{symbol}",
+        "beg": start,
+        "end": end,
     }
-    period_map = {"daily": "101", "weekly": "102", "monthly": "103"}
-    adjust_map = {"qfq": "1", "hfq": "2", "": "0"}
-    params["klt"] = period_map.get(period, "101")
-    params["fqt"] = adjust_map.get(adjust, "0")
-    params["secid"] = f"0.{symbol}"
-    params["beg"] = start_date
-    params["end"] = end_date
-
-    url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
-    data_json = _request_json(url, params)
-    if not (data_json.get("data") and data_json["data"].get("klines")):
-        return pd.DataFrame()
-
-    rows = [item.split(",") for item in data_json["data"]["klines"]]
-    cols = ["日期", "开盘", "收盘", "最高", "最低", "成交量", "成交额", "振幅", "涨跌幅", "涨跌额", "换手率"]
-    df = pd.DataFrame(rows, columns=cols[:len(rows[0])])
-    for col in df.columns:
-        if col == "日期":
-            continue
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df["日期"] = pd.to_datetime(df["日期"])
-    df.set_index("日期", inplace=True)
-    return df
+    data = _req_json(url, params)
+    return _parse_em_klines(data, symbol)
 
 
 # ══════════════════════════════════════════
@@ -214,24 +173,27 @@ def fetch_stock_history(
 ) -> pd.DataFrame:
     if end_date is None:
         end_date = datetime.now().strftime("%Y%m%d")
-    ck = _cache_key("stock", symbol, period, adjust, start_date, end_date)
-    cached = _read_cache(ck)
-    if cached is not None and not cached.empty:
-        return cached
 
-    exc = None
-    for attempt in range(3):
+    ck = _cache_key("stock", symbol, period, adjust)
+    cached = _read_cache(ck)
+    if cached is not None:
+        return _filter_by_date(cached, start_date, end_date)
+
+    # 尝试 East Money API
+    mc = 1 if symbol.startswith("6") else 0
+    err = None
+    for _ in range(3):
         try:
-            df = _em_stock_hist(symbol, period, start_date, end_date, adjust)
-            if not df.empty:
-                _write_cache(ck, df)
-                return df
+            full = _em_kline(symbol, mc, period, adjust)
+            if not full.empty:
+                _write_cache(ck, full)
+                return _filter_by_date(full, start_date, end_date)
         except _CONNECT_ERRORS as e:
-            exc = e
-            import time
-            time.sleep(2 ** attempt)
+            err = e
+            time.sleep(2)
             continue
 
+    # 降级: AKShare
     try:
         df = ak.stock_zh_a_hist(symbol=symbol, period=period,
                                 start_date=_validate_date(start_date),
@@ -241,18 +203,17 @@ def fetch_stock_history(
             df.set_index("日期", inplace=True)
             _write_cache(ck, df)
             return df
-    except Exception as e2:
-        exc = e2
+    except Exception as e:
+        err = e
 
     raise ConnectionError(
-        f"无法获取股票 {symbol} 的历史数据。"
-        f"请检查网络连接或稍后重试。"
-        f"({exc})"
-    ) from exc
+        f"无法获取股票 {symbol} 的数据。可能是代码不存在、类型选择有误或网络波动。"
+        f"建议: 确认代码正确, 或尝试切换资产类型。({err})"
+    )
 
 
 # ══════════════════════════════════════════
-#  2.  ETF 基金 (场内交易价格)
+#  2.  ETF 基金
 # ══════════════════════════════════════════
 
 def fetch_etf_history(
@@ -264,22 +225,22 @@ def fetch_etf_history(
 ) -> pd.DataFrame:
     if end_date is None:
         end_date = datetime.now().strftime("%Y%m%d")
-    ck = _cache_key("etf", symbol, period, adjust, start_date, end_date)
-    cached = _read_cache(ck)
-    if cached is not None and not cached.empty:
-        return cached
 
-    exc = None
-    for attempt in range(3):
+    ck = _cache_key("etf", symbol, period, adjust)
+    cached = _read_cache(ck)
+    if cached is not None:
+        return _filter_by_date(cached, start_date, end_date)
+
+    err = None
+    for _ in range(3):
         try:
-            df = _em_etf_hist(symbol, period, start_date, end_date, adjust)
-            if not df.empty:
-                _write_cache(ck, df)
-                return df
+            full = _em_kline(symbol, 0, period, adjust)
+            if not full.empty:
+                _write_cache(ck, full)
+                return _filter_by_date(full, start_date, end_date)
         except _CONNECT_ERRORS as e:
-            exc = e
-            import time
-            time.sleep(2 ** attempt)
+            err = e
+            time.sleep(2)
             continue
 
     try:
@@ -291,14 +252,13 @@ def fetch_etf_history(
             df.set_index("日期", inplace=True)
             _write_cache(ck, df)
             return df
-    except Exception as e2:
-        exc = e2
+    except Exception as e:
+        err = e
 
     raise ConnectionError(
-        f"无法获取ETF {symbol} 的历史数据。"
-        f"请检查网络连接或稍后重试。"
-        f"({exc})"
-    ) from exc
+        f"无法获取ETF {symbol} 的数据。可能是代码不存在、类型选择有误或网络波动。"
+        f"({err})"
+    )
 
 
 def fetch_etf_nav_history(
@@ -308,24 +268,25 @@ def fetch_etf_nav_history(
 ) -> pd.DataFrame:
     if end_date is None:
         end_date = datetime.now().strftime("%Y%m%d")
-    ck = _cache_key("etf_nav", symbol, start_date, end_date)
+    ck = _cache_key("etf_nav", symbol)
     cached = _read_cache(ck)
     if cached is not None:
-        return cached
+        return _filter_by_date(cached, start_date, end_date)
+
     df = ak.fund_etf_fund_info_em(
         fund=symbol,
-        start_date=_validate_date(start_date),
-        end_date=_validate_date(end_date),
+        start_date=_validate_date(_FULL_START),
+        end_date=_validate_date(_FULL_END),
     )
     if not df.empty:
         df["净值日期"] = pd.to_datetime(df["净值日期"])
         df.set_index("净值日期", inplace=True)
         _write_cache(ck, df)
-    return df
+    return _filter_by_date(df, start_date, end_date)
 
 
 # ══════════════════════════════════════════
-#  3.  LOF 基金 (场内交易价格)
+#  3.  LOF 基金
 # ══════════════════════════════════════════
 
 def fetch_lof_history(
@@ -337,37 +298,34 @@ def fetch_lof_history(
 ) -> pd.DataFrame:
     if end_date is None:
         end_date = datetime.now().strftime("%Y%m%d")
-    ck = _cache_key("lof", symbol, period, adjust, start_date, end_date)
+    ck = _cache_key("lof", symbol, period, adjust)
     cached = _read_cache(ck)
-    if cached is not None and not cached.empty:
-        return cached
+    if cached is not None:
+        return _filter_by_date(cached, start_date, end_date)
 
-    exc = None
-    for attempt in range(3):
+    err = None
+    for _ in range(3):
         try:
             df = ak.fund_lof_hist_em(symbol=symbol, period=period,
-                                     start_date=_validate_date(start_date),
-                                     end_date=_validate_date(end_date), adjust=adjust)
+                                     start_date=_validate_date(_FULL_START),
+                                     end_date=_validate_date(_FULL_END), adjust=adjust)
             if not df.empty:
                 df["日期"] = pd.to_datetime(df["日期"])
                 df.set_index("日期", inplace=True)
                 _write_cache(ck, df)
-                return df
+                return _filter_by_date(df, start_date, end_date)
         except _CONNECT_ERRORS as e:
-            exc = e
-            import time
-            time.sleep(2 ** attempt)
+            err = e
+            time.sleep(2)
             continue
 
     raise ConnectionError(
-        f"无法获取LOF {symbol} 的历史数据。"
-        f"请检查网络连接或稍后重试。"
-        f"({exc})"
-    ) from exc
+        f"无法获取LOF {symbol} 的数据。({err})"
+    )
 
 
 # ══════════════════════════════════════════
-#  4.  开放式基金 (场外基金净值)
+#  4.  开放式基金
 # ══════════════════════════════════════════
 
 def fetch_open_fund_nav(
@@ -376,16 +334,15 @@ def fetch_open_fund_nav(
 ) -> pd.DataFrame:
     ck = _cache_key("open_fund", symbol, indicator)
     cached = _read_cache(ck)
-    if cached is not None and not cached.empty:
+    if cached is not None:
         return cached
 
     df = ak.fund_open_fund_info_em(symbol=symbol, indicator=indicator, period="成立来")
-    if df.empty:
-        return df
-    date_col = [c for c in df.columns if "日期" in c][0]
-    df[date_col] = pd.to_datetime(df[date_col])
-    df.set_index(date_col, inplace=True)
-    _write_cache(ck, df)
+    if not df.empty:
+        date_col = [c for c in df.columns if "日期" in c][0]
+        df[date_col] = pd.to_datetime(df[date_col])
+        df.set_index(date_col, inplace=True)
+        _write_cache(ck, df)
     return df
 
 
@@ -400,22 +357,18 @@ def fetch_index_history(
 ) -> pd.DataFrame:
     if end_date is None:
         end_date = datetime.now().strftime("%Y%m%d")
-    ck = _cache_key("index", symbol, start_date, end_date)
+    ck = _cache_key("index", symbol)
     cached = _read_cache(ck)
-    if cached is not None and not cached.empty:
-        return cached
+    if cached is not None:
+        return _filter_by_date(cached, start_date, end_date)
 
     df = ak.stock_zh_index_daily_tx(symbol=symbol)
-    if df.empty:
-        return df
-    df["date"] = pd.to_datetime(df["date"])
-    df.set_index("date", inplace=True)
-    df = df.sort_index()
-    start_ts = pd.Timestamp(start_date)
-    end_ts = pd.Timestamp(end_date)
-    df = df[(df.index >= start_ts) & (df.index <= end_ts)]
-    _write_cache(ck, df)
-    return df
+    if not df.empty:
+        df["date"] = pd.to_datetime(df["date"])
+        df.set_index("date", inplace=True)
+        df = df.sort_index()
+        _write_cache(ck, df)
+    return _filter_by_date(df, start_date, end_date)
 
 
 # ══════════════════════════════════════════
@@ -426,37 +379,27 @@ ASSET_TYPE_CONFIG = {
     "stock": {
         "label": "A股个股",
         "price_label": "收盘",
-        "nav_label": None,
         "search_hint": "输入股票代码, 如 000001, 600519",
-        "suffix": "",
     },
     "etf": {
         "label": "ETF基金",
         "price_label": "收盘",
-        "nav_label": "单位净值",
         "search_hint": "输入ETF代码, 如 510300, 513100",
-        "suffix": "",
     },
     "lof": {
         "label": "LOF基金",
         "price_label": "收盘",
-        "nav_label": "单位净值",
         "search_hint": "输入LOF代码, 如 160719",
-        "suffix": "",
     },
     "open_fund": {
         "label": "开放式基金",
         "price_label": None,
-        "nav_label": "单位净值",
         "search_hint": "输入基金代码, 如 110011, 000001",
-        "suffix": "",
     },
     "index": {
         "label": "指数",
         "price_label": "close",
-        "nav_label": None,
         "search_hint": "输入指数代码, 如 sh000001, sh000300",
-        "suffix": "",
     },
 }
 
@@ -491,29 +434,28 @@ def fetch_history(
 def get_price_series(df: pd.DataFrame) -> Optional[pd.Series]:
     for col in ["收盘", "收盘价", "单位净值", "close", "close_price"]:
         if col in df.columns:
-            prices = df[col]
-            prices = prices.sort_index()
-            return prices
+            return df[col].sort_index()
     return None
 
 
 # ══════════════════════════════════════════
-#  7.  基金列表查询
+#  7.  辅助函数
 # ══════════════════════════════════════════
+
+def _validate_date(date_str: str) -> str:
+    if len(date_str) != 8:
+        raise ValueError(f"日期格式错误: {date_str}")
+    return date_str
+
 
 def get_etf_list() -> pd.DataFrame:
     df = ak.fund_etf_fund_daily_em()
-    if df.empty:
-        return df
-    return df[["基金代码", "基金简称"]]
+    return df[["基金代码", "基金简称"]] if not df.empty else df
 
 
 def get_open_fund_list() -> pd.DataFrame:
     df = ak.fund_open_fund_daily_em()
-    if df.empty:
-        return df
-    return df[["基金代码", "基金简称"]]
+    return df[["基金代码", "基金简称"]] if not df.empty else df
 
 
-# 启动时清理过期缓存
-_clear_expired_cache()
+_clear_expired()
