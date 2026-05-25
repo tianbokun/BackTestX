@@ -18,6 +18,9 @@ from data_fetcher import ASSET_TYPE_CONFIG, fetch_history, get_price_series
 from backtest.dca import run_dca_backtest, run_lump_sum_backtest, freq_map
 from backtest.strategies import (
     STRATEGY_CATALOG, run_dropbuy_backtest,
+    run_ma_adjust_dca, run_cost_average_dca,
+    run_value_averaging, run_trend_dca,
+    run_alipay_smart_dca,
 )
 from backtest.grid_search import (
     run_grid_search, save_result, list_saved_results, load_result,
@@ -357,19 +360,47 @@ def _render_grid_search(price_series):
         results = {}
 
         with st.spinner("正在运行所有策略对比..."):
+            dca_amt = float(compare_dca_amount)
+
             # 1. DCA 各频率
             all_freqs = ["daily", "weekly", "biweekly", "monthly", "quarterly", "yearly"]
             for f in all_freqs:
                 r = run_dca_backtest(
                     price_series=price_series,
                     start_date=start_str, end_date=end_str,
-                    frequency=f, amount=float(compare_dca_amount), day=1,
+                    frequency=f, amount=dca_amt, day=1,
                     max_total=mt,
                 )
                 if not r["records"].empty:
                     results[r["strategy"]] = r
 
-            # 2. 下跌加仓
+            # 2. 智能策略
+            sr = run_ma_adjust_dca(price_series, start_date=start_str, end_date=end_str,
+                                   amount=dca_amt*22, ma_period=250, max_total=mt)
+            if sr["num_investments"] > 0:
+                results[sr["strategy"]] = sr
+
+            sr = run_cost_average_dca(price_series, start_date=start_str, end_date=end_str,
+                                      amount=dca_amt*22, max_total=mt)
+            if sr["num_investments"] > 0:
+                results[sr["strategy"]] = sr
+
+            sr = run_value_averaging(price_series, start_date=start_str, end_date=end_str,
+                                     amount=dca_amt*22, max_total=mt)
+            if sr["num_investments"] > 0:
+                results[sr["strategy"]] = sr
+
+            sr = run_trend_dca(price_series, start_date=start_str, end_date=end_str,
+                               amount=dca_amt*22, max_total=mt)
+            if sr["num_investments"] > 0:
+                results[sr["strategy"]] = sr
+
+            sr = run_alipay_smart_dca(price_series, start_date=start_str, end_date=end_str,
+                                      amount=dca_amt*22, max_total=mt)
+            if sr["num_investments"] > 0:
+                results[sr["strategy"]] = sr
+
+            # 3. 下跌加仓
             db_res = run_dropbuy_backtest(
                 price_series, X=compare_X, Y=compare_Y,
                 start_date=start_str, end_date=end_str,
@@ -390,7 +421,7 @@ def _render_grid_search(price_series):
                     "strategy": label,
                 }
 
-            # 3. 一次性投入
+            # 4. 一次性投入
             lump_amount = mt if mt > 0 else (
                 next(iter(results.values()))["total_invested"] if results else 0
             )

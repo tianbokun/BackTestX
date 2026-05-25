@@ -358,3 +358,355 @@ def _xirr(transactions):
             break
         rate -= npv / deriv
     return rate
+
+
+# ══════════════════════════════════════════════════════════════
+#  智能策略回测引擎
+# ══════════════════════════════════════════════════════════════
+
+def _build_smart_result(
+    strategy_name: str,
+    invest_entries: List[Tuple],  # [(date, amount, price, extra_info_dict?), ...]
+    prices: pd.Series,
+    max_total: float = 0,
+) -> dict:
+    """
+    通用的策略结果构建器
+
+    将 [(date, amount, price), ...] 列表
+    转换为标准的结果 dict (与 run_dca_backtest 输出兼容)。
+
+    amount > 0 = 买入, amount < 0 = 卖出 (目标止盈策略), 均被正确处理。
+    """
+    cleaned = [(d, amt, p) for d, amt, p, *_ in invest_entries]
+
+    buy_total = sum(amt for _, amt, _ in cleaned if amt > 0)
+    sell_total = sum(abs(amt) for _, amt, _ in cleaned if amt < 0)
+    total_shares = sum(amt / p for _, amt, p in cleaned)
+
+    final_price = float(prices.iloc[-1])
+    final_value = total_shares * final_price
+    net_invested = buy_total - sell_total
+    total_return = (final_value - buy_total) / max(buy_total, 1e-9) * 100
+
+    cash_flows = [(d.to_pydatetime(), -amt) for d, amt, _ in cleaned]
+    cash_flows.append((prices.index[-1].to_pydatetime(), final_value))
+    annualized = _xirr(cash_flows) * 100
+
+    records = []
+    cs, ci = 0.0, 0.0
+    for d, amt, price in cleaned:
+        is_buy = amt > 0
+        shares = amt / price
+        cs += shares
+        ci += amt
+        label = "买入" if is_buy else "卖出"
+        records.append({
+            "日期": d,
+            "价格": round(price, 4),
+            label: round(abs(shares), 4),
+            "累计份额": round(cs, 4),
+            "交易金额": round(abs(amt), 2),
+            "累计净投入": round(ci, 2),
+        })
+    records_df = pd.DataFrame(records)
+
+    portfolio_vals, invested_vals = [], []
+    cs, ci = 0.0, 0.0
+    idx = 0
+    n = len(cleaned)
+    for dt, price in prices.items():
+        if idx < n and dt >= cleaned[idx][0]:
+            while idx < n and dt >= cleaned[idx][0]:
+                cs += cleaned[idx][1] / cleaned[idx][2]
+                ci += cleaned[idx][1]
+                idx += 1
+        portfolio_vals.append(cs * price)
+        invested_vals.append(ci)
+
+    return {
+        "strategy": strategy_name,
+        "total_invested": round(buy_total, 2),
+        "final_value": round(final_value, 2),
+        "total_return_pct": round(total_return, 2),
+        "annualized_return_pct": round(annualized, 2),
+        "num_investments": len(cleaned),
+        "records": records_df,
+        "nav_series": prices,
+        "portfolio_series": pd.Series(portfolio_vals, index=prices.index),
+        "invested_series": pd.Series(invested_vals, index=prices.index),
+    }
+
+
+# ── 1. 均线偏离法 (慧定投) ──
+
+def _ma_adjust_factor(price: float, ma: float, min_r: float, max_r: float) -> float:
+    """计算均线偏离调整系数"""
+    if np.isnan(ma) or ma <= 0:
+        return 1.0
+    ratio = ma / price  # below MA → ratio > 1 → increase; above → ratio < 1 → decrease
+    return max(min_r, min(max_r, ratio))
+
+
+def run_ma_adjust_dca(
+    price_series: pd.Series,
+    start_date: str = None,
+    end_date: str = None,
+    amount: float = 1000,
+    ma_period: int = 250,
+    min_ratio: float = 0.5,
+    max_ratio: float = 2.0,
+    max_total: float = 0,
+) -> dict:
+    """
+    均线偏离法 (慧定投)
+
+    若当前价格低于均线 → 增加金额 (最多 2 倍)
+    若当前价格高于均线 → 减少金额 (最少 0.5 倍)
+    """
+    prices = price_series.sort_index().dropna()
+    if start_date: prices = prices[prices.index >= pd.Timestamp(start_date)]
+    if end_date: prices = prices[prices.index <= pd.Timestamp(end_date)]
+    if len(prices) < 2:
+        return _build_smart_result("均线偏离(慧定投)", [], prices)
+
+    ma = prices.rolling(ma_period, min_periods=ma_period).mean()
+
+    # 每月 1 号检查
+    invest_dates = []
+    for dt, price in prices.items():
+        if dt.day == 1 or (len(invest_dates) == 0 and dt == prices.index[0]):
+            factor = _ma_adjust_factor(price, ma.loc[dt], min_ratio, max_ratio)
+            actual = amount * factor
+            invest_dates.append((dt, actual, price))
+
+    # Apply max_total cap
+    capped = []
+    cum = 0.0
+    for dt, amt, price in invest_dates:
+        if max_total > 0 and cum + amt > max_total:
+            amt = max(0, max_total - cum)
+        if amt > 0:
+            capped.append((dt, amt, price))
+            cum += amt
+        if max_total > 0 and cum >= max_total:
+            break
+
+    return _build_smart_result(
+        f"均线偏离(MA{ma_period}, {min_ratio}~{max_ratio}x)",
+        capped, prices, max_total,
+    )
+
+
+# ── 2. 移动平均成本法 (成本定投) ──
+
+def run_cost_average_dca(
+    price_series: pd.Series,
+    start_date: str = None,
+    end_date: str = None,
+    amount: float = 1000,
+    min_ratio: float = 0.5,
+    max_ratio: float = 2.0,
+    max_total: float = 0,
+) -> dict:
+    """
+    移动平均成本法 (成本定投)
+
+    净值低于平均成本 → 多投; 净值高于平均成本 → 少投
+    扣款率 = avg_cost / price, 范围 0.5~2.0
+    """
+    prices = price_series.sort_index().dropna()
+    if start_date: prices = prices[prices.index >= pd.Timestamp(start_date)]
+    if end_date: prices = prices[prices.index <= pd.Timestamp(end_date)]
+    if len(prices) < 2:
+        return _build_smart_result("成本定投", [], prices)
+
+    entries = []
+    total_shares, total_invested = 0.0, 0.0
+
+    for dt, price in prices.items():
+        if dt.day == 1 or (len(entries) == 0 and dt == prices.index[0]):
+            avg_cost = total_invested / total_shares if total_shares > 0 else price
+            factor = avg_cost / price  # below cost → >1, above cost → <1
+            factor = max(min_ratio, min(max_ratio, factor))
+            actual = amount * factor
+
+            if max_total > 0 and total_invested + actual > max_total:
+                actual = max(0, max_total - total_invested)
+            if actual > 0:
+                entries.append((dt, actual, price))
+                total_shares += actual / price
+                total_invested += actual
+            if max_total > 0 and total_invested >= max_total:
+                break
+
+    return _build_smart_result(
+        f"成本定投({min_ratio}~{max_ratio}x)",
+        entries, prices, max_total,
+    )
+
+
+# ── 3. 价值平均策略 (市值定投) ──
+
+def run_value_averaging(
+    price_series: pd.Series,
+    start_date: str = None,
+    end_date: str = None,
+    amount: float = 1000,
+    max_total: float = 0,
+) -> dict:
+    """
+    价值平均策略 (市值定投)
+
+    每月设定目标市值 = 当月期数 × amount
+    若当前市值 < 目标 → 补足差额 (买入)
+    若当前市值 > 目标 → 不减仓 (长期持有, 不卖出)
+    """
+    prices = price_series.sort_index().dropna()
+    if start_date: prices = prices[prices.index >= pd.Timestamp(start_date)]
+    if end_date: prices = prices[prices.index <= pd.Timestamp(end_date)]
+    if len(prices) < 2:
+        return _build_smart_result("价值平均", [], prices)
+
+    entries = []
+    total_shares, total_invested = 0.0, 0.0
+    period = 0
+
+    for dt, price in prices.items():
+        if dt.day == 1 or (len(entries) == 0 and dt == prices.index[0]):
+            period += 1
+            target = amount * period
+            current_value = total_shares * price
+
+            diff = target - current_value
+            if diff > 100:  # 微小差额忽略
+                actual = min(diff, max_total - total_invested) if max_total > 0 else diff
+                if actual > 0:
+                    entries.append((dt, actual, price))
+                    total_shares += actual / price
+                    total_invested += actual
+            # diff <= 0 → 不操作 (长期持有)
+            if max_total > 0 and total_invested >= max_total:
+                break
+
+    return _build_smart_result(
+        f"价值平均({amount:.0f}元/期)",
+        entries, prices, max_total,
+    )
+
+
+# ── 4. 趋势定投 (均线金叉/死叉) ──
+
+def run_trend_dca(
+    price_series: pd.Series,
+    start_date: str = None,
+    end_date: str = None,
+    amount: float = 1000,
+    short_period: int = 20,
+    long_period: int = 120,
+    aggressive_mult: float = 1.5,
+    conservative_mult: float = 0.5,
+    max_total: float = 0,
+) -> dict:
+    """
+    趋势定投 (均线金叉/死叉)
+
+    短期均线 > 长期均线 (金叉) → 牛市信号, 多投 1.5 倍
+    短期均线 < 长期均线 (死叉) → 熊市信号, 少投 0.5 倍
+    """
+    prices = price_series.sort_index().dropna()
+    if start_date: prices = prices[prices.index >= pd.Timestamp(start_date)]
+    if end_date: prices = prices[prices.index <= pd.Timestamp(end_date)]
+    if len(prices) < long_period + 1:
+        return _build_smart_result("趋势定投(金叉/死叉)", [], prices)
+
+    ma_short = prices.rolling(short_period, min_periods=short_period).mean()
+    ma_long = prices.rolling(long_period, min_periods=long_period).mean()
+
+    entries = []
+    cum = 0.0
+
+    for dt, price in prices.items():
+        if dt.day != 1 and dt != prices.index[0]:
+            continue
+        s, l = ma_short.loc[dt], ma_long.loc[dt]
+        if np.isnan(s) or np.isnan(l):
+            continue
+        mult = aggressive_mult if s > l else conservative_mult
+        actual = amount * mult
+        if max_total > 0 and cum + actual > max_total:
+            actual = max(0, max_total - cum)
+        if actual > 0:
+            entries.append((dt, actual, price))
+            cum += actual
+        if max_total > 0 and cum >= max_total:
+            break
+
+    return _build_smart_result(
+        f"趋势定投(MA{short_period}/{long_period}, {conservative_mult}~{aggressive_mult}x)",
+        entries, prices, max_total,
+    )
+
+
+# ── 5. 支付宝慧定投 (均线+振幅) ──
+
+def run_alipay_smart_dca(
+    price_series: pd.Series,
+    start_date: str = None,
+    end_date: str = None,
+    amount: float = 1000,
+    ma_period: int = 500,
+    min_rate: float = 0.6,
+    max_rate: float = 2.1,
+    max_total: float = 0,
+) -> dict:
+    """
+    支付宝慧定投 (均线偏离 + 振幅调节)
+
+    1. 计算当前价格相对 500 日均线的偏离度
+    2. 偏离度决定基础扣款率 (0.6~2.1)
+    3. 近 10 日振幅过大时进一步降低扣款率
+    """
+    prices = price_series.sort_index().dropna()
+    if start_date: prices = prices[prices.index >= pd.Timestamp(start_date)]
+    if end_date: prices = prices[prices.index <= pd.Timestamp(end_date)]
+    if len(prices) < ma_period:
+        return _build_smart_result("支付宝慧定投", [], prices)
+
+    ma = prices.rolling(ma_period, min_periods=ma_period).mean()
+    # 10 日振幅: (high - low) / close, rolling 10
+    amp_10 = prices.rolling(10).max() / prices.rolling(10).min() - 1
+
+    entries = []
+    cum = 0.0
+
+    for dt, price in prices.items():
+        if dt.day != 1 and dt != prices.index[0]:
+            continue
+        mav = ma.loc[dt]
+        if np.isnan(mav) or mav <= 0:
+            continue
+
+        # 偏离度: 正=高于均线(应少投), 负=低于均线(应多投)
+        deviation = price / mav - 1
+        base_rate = 1.0 - deviation  # below MA → >1, above → <1
+
+        # 振幅调节: 10日振幅超 5% 时降低 0.1
+        amp = amp_10.loc[dt] if not np.isnan(amp_10.loc[dt]) else 0
+        if amp > 0.05:
+            base_rate -= 0.1 * min(amp / 0.05, 2.0)  # 最高降 0.2
+
+        rate = max(min_rate, min(max_rate, base_rate))
+        actual = amount * rate
+        if max_total > 0 and cum + actual > max_total:
+            actual = max(0, max_total - cum)
+        if actual > 0:
+            entries.append((dt, actual, price))
+            cum += actual
+        if max_total > 0 and cum >= max_total:
+            break
+
+    return _build_smart_result(
+        f"支付宝慧定投(MA{ma_period}, {min_rate}~{max_rate}x)",
+        entries, prices, max_total,
+    )
