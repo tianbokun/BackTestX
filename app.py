@@ -22,6 +22,9 @@ from backtest.strategies import (
     run_value_averaging, run_trend_dca,
     run_alipay_smart_dca,
 )
+from backtest.rl.trainer import (
+    train_dqn, evaluate, run_bh_baseline,
+)
 from backtest.grid_search import (
     run_grid_search, save_result, list_saved_results, load_result,
 )
@@ -37,7 +40,7 @@ st.set_page_config(
 #  侧边栏导航 + 公共参数
 # ══════════════════════════════════════════
 
-mode = st.sidebar.radio("模式", ["📊 定投回测", "🎯 网格搜索"], index=0)
+mode = st.sidebar.radio("模式", ["📊 定投回测", "🎯 网格搜索", "🤖 强化学习"], index=0)
 
 asset_type = st.sidebar.selectbox(
     "资产类型",
@@ -131,7 +134,7 @@ def _render_dca_backtest(price_series):
 
     include_lump_sum = st.sidebar.checkbox("对比: 一次性投入", value=True)
 
-    run_btn = st.sidebar.button("🚀 开始回测", type="primary", use_container_width=True)
+    run_btn = st.sidebar.button("🚀 开始回测", type="primary", width='stretch')
 
     # 价格走势
     fig_price = go.Figure()
@@ -145,7 +148,7 @@ def _render_dca_backtest(price_series):
         hovermode="x unified", margin=dict(l=10, r=10, t=10, b=10), height=380,
     )
     st.subheader("📉 历史价格走势")
-    st.plotly_chart(fig_price, use_container_width=True)
+    st.plotly_chart(fig_price, width='stretch')
 
     def _run_all(amount, freqs, day, max_total):
         results = {}
@@ -223,7 +226,7 @@ def _render_dca_backtest(price_series):
             "总投入": "{:,.2f}", "终值": "{:,.2f}",
             "总收益率%": "{:+.2f}%", "年化收益率%": "{:+.2f}%",
         }),
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
         column_config={
             "总投入": st.column_config.NumberColumn(format="%.2f"),
             "终值": st.column_config.NumberColumn(format="%.2f"),
@@ -251,7 +254,7 @@ def _render_dca_backtest(price_series):
         hovermode="x unified", margin=dict(l=10, r=10, t=10, b=10), height=450,
         legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
     )
-    st.plotly_chart(fig_c, use_container_width=True)
+    st.plotly_chart(fig_c, width='stretch')
 
     # 累计投入对比
     st.subheader("💰 累计投入对比")
@@ -267,7 +270,7 @@ def _render_dca_backtest(price_series):
         hovermode="x unified", margin=dict(l=10, r=10, t=10, b=10), height=350,
         legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
     )
-    st.plotly_chart(fig_inv, use_container_width=True)
+    st.plotly_chart(fig_inv, width='stretch')
 
     # 收益率走势
     st.subheader("📈 收益率走势对比")
@@ -285,7 +288,7 @@ def _render_dca_backtest(price_series):
         hovermode="x unified", margin=dict(l=10, r=10, t=10, b=10), height=350,
         legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
     )
-    st.plotly_chart(fig_ret, use_container_width=True)
+    st.plotly_chart(fig_ret, width='stretch')
 
     # 明细
     st.subheader("📋 各策略定投明细")
@@ -300,7 +303,7 @@ def _render_dca_backtest(price_series):
             if not r["records"].empty:
                 rec = r["records"].copy()
                 rec["日期"] = rec["日期"].dt.strftime("%Y-%m-%d")
-                st.dataframe(rec, use_container_width=True, hide_index=True)
+                st.dataframe(rec, width='stretch', hide_index=True)
 
 
 # ══════════════════════════════════════════
@@ -350,7 +353,7 @@ def _render_grid_search(price_series):
         help="实际每期投入 = 日均金额 × 对应频率的交易日乘数",
     )
 
-    run_compare = st.button("🏁 运行全能对比", type="primary", use_container_width=True,
+    run_compare = st.button("🏁 运行全能对比", type="primary", width='stretch',
                             key="run_compare")
 
     if run_compare:
@@ -460,7 +463,7 @@ def _render_grid_search(price_series):
                     "总投入": "{:,.2f}", "终值": "{:,.2f}",
                     "总收益率%": "{:+.2f}%", "年化收益率%": "{:+.2f}%",
                 }),
-                use_container_width=True, hide_index=True,
+                width='stretch', hide_index=True,
             )
 
             colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
@@ -482,7 +485,7 @@ def _render_grid_search(price_series):
                 hovermode="x unified", margin=dict(l=10, r=10, t=10, b=10), height=450,
                 legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
             )
-            st.plotly_chart(fig_c, use_container_width=True)
+            st.plotly_chart(fig_c, width='stretch')
 
             # ── 累计投入对比 ──
             st.subheader("💰 累计投入对比")
@@ -498,7 +501,7 @@ def _render_grid_search(price_series):
                 hovermode="x unified", margin=dict(l=10, r=10, t=10, b=10), height=350,
                 legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
             )
-            st.plotly_chart(fig_inv, use_container_width=True)
+            st.plotly_chart(fig_inv, width='stretch')
 
             # ── 收益率走势 ──
             st.subheader("📈 收益率走势对比")
@@ -517,7 +520,7 @@ def _render_grid_search(price_series):
                 hovermode="x unified", margin=dict(l=10, r=10, t=10, b=10), height=350,
                 legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
             )
-            st.plotly_chart(fig_ret, use_container_width=True)
+            st.plotly_chart(fig_ret, width='stretch')
 
             # ── 明细 ──
             st.subheader("📋 各策略交易明细")
@@ -533,7 +536,7 @@ def _render_grid_search(price_series):
                         rec = r["records"].copy()
                         if "日期" in rec.columns and hasattr(rec["日期"], "dt"):
                             rec["日期"] = rec["日期"].dt.strftime("%Y-%m-%d")
-                        st.dataframe(rec, use_container_width=True, hide_index=True)
+                        st.dataframe(rec, width='stretch', hide_index=True)
 
         st.markdown("---")
 
@@ -591,7 +594,7 @@ def _render_grid_search(price_series):
         help="该策略在整个回测区间内的累计投入上限 (训练+验证共享此额度); 0 表示不设限",
     )
 
-    run_gs = st.button("🚀 启动网格搜索", type="primary", use_container_width=True)
+    run_gs = st.button("🚀 启动网格搜索", type="primary", width='stretch')
 
     # ═══════════════════════ 执行搜索 ═══════════════════════
 
@@ -664,7 +667,7 @@ def _render_grid_search(price_series):
                 "最优 Y": f"{fold.best_params.get('Y', 0):.0f}",
                 "验证年化": f"{fold.best_val_return:.2f}%",
             })
-        st.dataframe(pd.DataFrame(fold_rows), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(fold_rows), hide_index=True, width='stretch')
 
         # 热力图: 各参数组合的平均验证年化
         st.markdown("#### 参数热力图 (各组合平均验证年化)")
@@ -688,7 +691,7 @@ def _render_grid_search(price_series):
             height=400,
             margin=dict(l=10, r=10, t=10, b=10),
         )
-        st.plotly_chart(fig_heat, use_container_width=True)
+        st.plotly_chart(fig_heat, width='stretch')
 
         # 全面结果表
         st.markdown("#### 全部网格搜索结果")
@@ -698,7 +701,7 @@ def _render_grid_search(price_series):
             "val_num_trades": "验证触发次数", "val_annualized": "验证年化(%)",
         }
         display_df = gs_result.trials_df[list(display_cols.keys())].rename(columns=display_cols)
-        st.dataframe(display_df, hide_index=True, use_container_width=True)
+        st.dataframe(display_df, hide_index=True, width='stretch')
 
         st.caption(f"结果已保存至: `{saved_path}`")
 
@@ -730,7 +733,175 @@ def _render_grid_search(price_series):
                 "平均验证年化": result.avg_val_return,
             })
             if not result.trials_df.empty:
-                st.dataframe(result.trials_df, use_container_width=True)
+                st.dataframe(result.trials_df, width='stretch')
+
+
+# ══════════════════════════════════════════
+#  强化学习模式
+# ══════════════════════════════════════════
+
+def _render_rl_training(df_full):
+    st.title("🤖 DQN 强化学习训练系统")
+
+    # 归一化列名
+    rename_map = {"开盘": "开盘价", "收盘": "收盘价", "最高": "最高价", "最低": "最低价"}
+    df = df_full.copy()
+    df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
+
+    has_required = all(c in df.columns for c in ["开盘价", "收盘价", "最高价", "最低价"])
+    if not has_required:
+        st.warning("当前数据缺少完整的 OHLC 列，强化学习需要开盘/收盘/最高/最低价数据")
+        st.stop()
+
+    # 侧边栏参数
+    st.sidebar.markdown("### 🤖 强化学习参数")
+
+    train_start = st.sidebar.date_input("训练集开始", value=df.index[0].date() if len(df) > 0 else date.today())
+    train_end = st.sidebar.date_input("训练集结束", value=df.index[len(df)//2].date() if len(df) > 1 else date.today())
+    test_start = st.sidebar.date_input("测试集开始", value=train_end)
+    test_end = st.sidebar.date_input("测试集结束", value=df.index[-1].date())
+
+    system_version = st.sidebar.selectbox(
+        "系统版本",
+        options=["basic", "1.0", "2.0"],
+        format_func=lambda x: {
+            "basic": "基础版 (仅价格)",
+            "1.0": "系统 1.0 (+技术指标)",
+            "2.0": "系统 2.0 (+SVM+XGBoost)",
+        }[x],
+        index=1,
+        help="basic=仅过去30日收盘价, 1.0=加入技术指标, 2.0=加入SVM/XGBoost涨跌信号",
+    )
+
+    with st.sidebar.expander("⚙️ DQN 超参数", expanded=False):
+        n_episodes = st.number_input("训练轮数", min_value=10, value=64, step=10)
+        batch_size = st.number_input("Batch 大小", min_value=32, value=200, step=32)
+        lr = st.text_input("学习率", value="1e-5")
+        gamma = st.text_input("折扣因子 γ", value="0.98")
+        hidden = st.number_input("隐藏层维度", min_value=32, value=128, step=32)
+        epsilon_start = st.text_input("ε 初始值", value="0.9")
+        epsilon_end = st.text_input("ε 终值", value="0.01")
+        epsilon_decay = st.number_input("ε 衰减步数", min_value=100, value=500, step=100)
+        target_update = st.number_input("目标网络更新间隔", min_value=10, value=50, step=10)
+        buffer_capacity = st.number_input("经验回放容量", min_value=1000, value=10000, step=1000)
+
+    run_btn = st.sidebar.button("🚀 开始训练", type="primary", width='stretch')
+
+    if not run_btn:
+        st.info("👈 在侧边栏设置好参数后，点击「开始训练」")
+        st.stop()
+
+    # 划分数据集
+    df_train = df[(df.index >= pd.Timestamp(train_start)) & (df.index <= pd.Timestamp(train_end))].copy()
+    df_test = df[(df.index >= pd.Timestamp(test_start)) & (df.index <= pd.Timestamp(test_end))].copy()
+
+    if len(df_train) < 50:
+        st.error(f"训练数据不足 ({len(df_train)} 行)，请扩大训练集")
+        st.stop()
+    if len(df_test) < 20:
+        st.error(f"测试数据不足 ({len(df_test)} 行)，请扩大测试集")
+        st.stop()
+
+    st.info(f"训练集: {train_start} ~ {train_end} ({len(df_train)} 个交易日)")
+    st.info(f"测试集: {test_start} ~ {test_end} ({len(df_test)} 个交易日)")
+
+    # 训练进度
+    progress_bar = st.progress(0)
+    loss_chart = st.empty()
+    loss_data = []
+
+    def _progress(ep, total, loss):
+        progress_bar.progress((ep + 1) / total)
+        if loss > 0:
+            loss_data.append((ep, loss))
+        if len(loss_data) > 1:
+            import plotly.graph_objects as go
+            ldf = pd.DataFrame(loss_data, columns=["ep", "loss"])
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=ldf["ep"], y=ldf["loss"], mode="lines", name="Loss"))
+            fig.update_layout(height=250, margin=dict(l=10, r=10, t=10, b=10),
+                              xaxis_title="Step", yaxis_title="Loss")
+            loss_chart.plotly_chart(fig, width='stretch')
+
+    try:
+        params = {
+            "n_episodes": int(n_episodes),
+            "batch_size": int(batch_size),
+            "lr": float(lr),
+            "gamma": float(gamma),
+            "hidden": int(hidden),
+            "epsilon_start": float(epsilon_start),
+            "epsilon_end": float(epsilon_end),
+            "epsilon_decay": int(epsilon_decay),
+            "target_update": int(target_update),
+            "buffer_capacity": int(buffer_capacity),
+        }
+    except ValueError:
+        st.error("超参数格式错误，请检查数字格式")
+        st.stop()
+
+    with st.spinner("正在训练 DQN 智能体..."):
+        agent, _ = train_dqn(
+            df_train, system_version=system_version,
+            progress_callback=_progress,
+            **params,
+        )
+
+    st.success("✅ 训练完成！")
+
+    # 测试集评估
+    st.markdown("---")
+    st.subheader("📊 测试集回测结果")
+
+    with st.spinner("正在回测..."):
+        result_dqn = evaluate(agent, df_test, system_version=system_version)
+        result_bh = run_bh_baseline(df_test)
+
+    # 指标对比表
+    st.markdown("#### 📋 策略指标对比")
+    comp = pd.DataFrame([
+        {"策略": "DQN", "最终金额": result_dqn["final_value"],
+         "收益率%": result_dqn["total_return_pct"],
+         "夏普比率": result_dqn["sharpe_ratio"],
+         "最大回撤%": result_dqn["max_drawdown_pct"],
+         "交易次数": result_dqn["num_trades"]},
+        {"策略": "买入持有(BH)", "最终金额": result_bh["final_value"],
+         "收益率%": result_bh["total_return_pct"],
+         "夏普比率": result_bh["sharpe_ratio"],
+         "最大回撤%": result_bh["max_drawdown_pct"],
+         "交易次数": "-"},
+    ])
+    st.dataframe(comp, width='stretch', hide_index=True)
+
+    # 累计利润图
+    st.markdown("#### 📈 累计利润对比")
+    import plotly.graph_objects as go
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df_test.index, y=result_dqn["equity_curve"],
+        mode="lines", name=f"DQN ({system_version})",
+        line=dict(color="#1f77b4", width=2),
+    ))
+    fig.add_trace(go.Scatter(
+        x=df_test.index, y=result_bh["equity_curve"],
+        mode="lines", name="买入持有(BH)",
+        line=dict(color="#ff7f0e", width=2, dash="dash"),
+    ))
+    fig.add_hline(y=1.0, line_dash="dot", line_color="gray", annotation_text="初始本金")
+    fig.update_layout(
+        xaxis_title="日期", yaxis_title="账户总值 (初始=1.0)",
+        hovermode="x unified", height=400,
+        margin=dict(l=10, r=10, t=10, b=10),
+        legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
+    )
+    st.plotly_chart(fig, width='stretch')
+
+    # 交易记录
+    if not result_dqn["trades"].empty:
+        st.markdown("#### 📝 交易记录")
+        trades_df = result_dqn["trades"].copy()
+        trades_df["日期"] = trades_df["日期"].dt.strftime("%Y-%m-%d")
+        st.dataframe(trades_df, width='stretch', hide_index=True)
 
 
 # ══════════════════════════════════════════
@@ -743,10 +914,12 @@ with st.expander("📋 原始数据预览", expanded=False):
     display_df = df.copy()
     if isinstance(display_df.index, pd.DatetimeIndex):
         display_df = display_df.reset_index()
-    st.dataframe(display_df.tail(20), use_container_width=True)
+    st.dataframe(display_df.tail(20), width='stretch')
 
 if mode.startswith("📊"):
     _render_dca_backtest(price_series)
+elif mode.startswith("🤖"):
+    _render_rl_training(df)
 else:
     _render_grid_search(price_series)
 

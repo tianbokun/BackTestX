@@ -21,7 +21,9 @@ while true; do
 done
 
 cd "$APP_DIR"
-exec streamlit run app.py \
+
+PYTHON=/home/tianbo/.conda/envs/stock_analysis/bin/python3
+exec "$PYTHON" -m streamlit run app.py \
     --server.port="$PORT" \
     --server.headless=true \
     --server.address=0.0.0.0 \

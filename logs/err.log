@@ -2758,3 +2758,71 @@
 2026-05-22 17:04:33: For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
 2026-05-22 17:08:24: 2026-05-22 17:08:24.358 Uvicorn server started on 0.0.0.0:8501
 2026-05-25 14:58:12: 2026-05-25 14:58:12.166 Uvicorn server started on 0.0.0.0:8501
+2026-05-26 09:47:55: /home/tianbo/home/各类文件/投资/stock_history_analysis/start_streamlit.sh: line 27: exec: streamlit: not found
+2026-05-26 09:48:01: /home/tianbo/home/各类文件/投资/stock_history_analysis/start_streamlit.sh: line 27: exec: streamlit: not found
+2026-05-26 09:48:08: /home/tianbo/home/各类文件/投资/stock_history_analysis/start_streamlit.sh: line 27: exec: streamlit: not found
+2026-05-26 09:48:15: /home/tianbo/home/各类文件/投资/stock_history_analysis/start_streamlit.sh: line 27: exec: streamlit: not found
+2026-05-26 09:48:22: /home/tianbo/home/各类文件/投资/stock_history_analysis/start_streamlit.sh: line 27: exec: streamlit: not found
+2026-05-26 09:48:33: /home/tianbo/home/各类文件/投资/stock_history_analysis/start_streamlit.sh: line 27: m: command not found
+2026-05-26 09:48:42: Traceback (most recent call last):
+2026-05-26 09:48:42:   File "/home/tianbo/.conda/envs/stock_analysis/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+2026-05-26 09:48:42:     return _run_code(code, main_globals, None,
+2026-05-26 09:48:42:   File "/home/tianbo/.conda/envs/stock_analysis/lib/python3.10/runpy.py", line 86, in _run_code
+2026-05-26 09:48:42:     exec(code, run_globals)
+2026-05-26 09:48:42:   File "/home/tianbo/.local/lib/python3.10/site-packages/streamlit/__main__.py", line 15, in <module>
+2026-05-26 09:48:42:     from streamlit.web.cli import main
+2026-05-26 09:48:42:   File "/home/tianbo/.local/lib/python3.10/site-packages/streamlit/web/cli.py", line 30, in <module>
+2026-05-26 09:48:42:     from streamlit.runtime.credentials import Credentials, check_credentials
+2026-05-26 09:48:42:   File "<frozen importlib._bootstrap>", line 1024, in _find_and_load
+2026-05-26 09:48:42:   File "<frozen importlib._bootstrap>", line 174, in __exit__
+2026-05-26 09:48:42:   File "<frozen importlib._bootstrap>", line 126, in release
+2026-05-26 09:48:42: KeyboardInterrupt
+2026-05-26 09:48:51: 2026-05-26 09:48:51.199 Uvicorn server started on 0.0.0.0:8501
+2026-05-26 09:49:26: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:49:29: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:49:32: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:49:35: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:49:39: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:49:42: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:49:45: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:49:48: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:49:51: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:49:54: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:49:58: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:50:01: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:50:04: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:50:07: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:50:11: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:50:14: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:50:17: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:50:20: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:50:23: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:50:26: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:50:30: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:50:33: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:50:36: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:50:40: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:50:43: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:50:46: /home/tianbo/.conda/envs/stock_analysis/bin/python3: No module named streamlit
+2026-05-26 09:50:55: 2026-05-26 09:50:55.066 Uvicorn server started on 0.0.0.0:8501
+2026-05-26 09:51:01: 2026-05-26 09:51:01.777 Uvicorn server started on 0.0.0.0:8501
+2026-05-26 09:52:29: 2026-05-26 09:52:29.040 Uvicorn server started on 0.0.0.0:8501
+2026-05-26 09:59:41: /home/tianbo/.local/lib/python3.10/site-packages/py_mini_racer/py_mini_racer.py:15: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+2026-05-26 09:59:41:   import pkg_resources
+2026-05-26 10:08:25: 2026-05-26 10:08:25.600 Serialization of dataframe to Arrow table was unsuccessful. Applying automatic fixes for column types to make the dataframe Arrow-compatible.
+2026-05-26 10:08:25: Traceback (most recent call last):
+2026-05-26 10:08:25:   File "/home/tianbo/.local/lib/python3.10/site-packages/streamlit/dataframe_util.py", line 961, in convert_pandas_df_to_arrow_bytes
+2026-05-26 10:08:25:     table = pa.Table.from_pandas(df)
+2026-05-26 10:08:25:   File "pyarrow/table.pxi", line 4796, in pyarrow.lib.Table.from_pandas
+2026-05-26 10:08:25:   File "/home/tianbo/.local/lib/python3.10/site-packages/pyarrow/pandas_compat.py", line 651, in dataframe_to_arrays
+2026-05-26 10:08:25:     arrays = [convert_column(c, f)
+2026-05-26 10:08:25:   File "/home/tianbo/.local/lib/python3.10/site-packages/pyarrow/pandas_compat.py", line 651, in <listcomp>
+2026-05-26 10:08:25:     arrays = [convert_column(c, f)
+2026-05-26 10:08:25:   File "/home/tianbo/.local/lib/python3.10/site-packages/pyarrow/pandas_compat.py", line 639, in convert_column
+2026-05-26 10:08:25:     raise e
+2026-05-26 10:08:25:   File "/home/tianbo/.local/lib/python3.10/site-packages/pyarrow/pandas_compat.py", line 633, in convert_column
+2026-05-26 10:08:25:     result = pa.array(col, type=type_, from_pandas=True, safe=safe)
+2026-05-26 10:08:25:   File "pyarrow/array.pxi", line 365, in pyarrow.lib.array
+2026-05-26 10:08:25:   File "pyarrow/array.pxi", line 91, in pyarrow.lib._ndarray_to_array
+2026-05-26 10:08:25:   File "pyarrow/error.pxi", line 92, in pyarrow.lib.check_status
+2026-05-26 10:08:25: pyarrow.lib.ArrowInvalid: ("Could not convert '-' with type str: tried to convert to int64", 'Conversion failed for column 交易次数 with type object')
