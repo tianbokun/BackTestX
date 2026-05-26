@@ -145,6 +145,9 @@ def run_dca_backtest(
     amount: float = 1000,
     day: int = 1,
     max_total: float = 0,
+    commission_rate: float = 0.00025,
+    min_commission: float = 5.0,
+    stamp_duty: float = 0.001,
 ) -> dict:
     """
     执行定投回测
@@ -220,6 +223,7 @@ def run_dca_backtest(
     invest_entries = []
     total_invested = 0.0
     total_shares = 0.0
+    total_commissions = 0.0
 
     for inv_date in invest_dates:
         price = prices.loc[inv_date]
@@ -228,17 +232,19 @@ def run_dca_backtest(
             actual = max_total - total_invested
             if actual <= 0:
                 break
-        shares = actual / price
+        buy_commission = max(actual * commission_rate, min_commission)
+        buy_commission = min(buy_commission, actual)
+        total_commissions += buy_commission
+        shares = (actual - buy_commission) / price
         total_shares += shares
         total_invested += actual
-        invest_entries.append((inv_date, actual, price))
+        invest_entries.append((inv_date, actual, price, shares))
 
     records = []
     cash_flows = []
     cum_shares = 0.0
     cum_invested = 0.0
-    for inv_date, actual, price in invest_entries:
-        shares = actual / price
+    for inv_date, actual, price, shares in invest_entries:
         cum_shares += shares
         cum_invested += actual
         records.append({
@@ -248,11 +254,15 @@ def run_dca_backtest(
             "累计份额": round(cum_shares, 4),
             "投入金额": round(actual, 2),
             "累计投入": round(cum_invested, 2),
+            "佣金": round(actual - shares * price, 4),
         })
         cash_flows.append((inv_date.to_pydatetime(), -actual))
 
     final_price = prices.iloc[-1]
-    final_value = total_shares * final_price
+    final_value_before = total_shares * final_price
+    sell_commission = max(final_value_before * commission_rate, min_commission)
+    sell_stamp = final_value_before * stamp_duty
+    final_value = final_value_before - sell_commission - sell_stamp
     total_return = (final_value - total_invested) / total_invested * 100 if total_invested > 0 else 0
     cash_flows.append((prices.index[-1].to_pydatetime(), final_value))
     annualized = _xirr(cash_flows) * 100
@@ -268,9 +278,8 @@ def run_dca_backtest(
     for date_idx, price in prices.items():
         if inv_idx < inv_count and date_idx >= invest_entries[inv_idx][0]:
             while inv_idx < inv_count and date_idx >= invest_entries[inv_idx][0]:
-                actual = invest_entries[inv_idx][1]
-                cum_shares += actual / invest_entries[inv_idx][2]
-                cum_invested += actual
+                cum_shares += invest_entries[inv_idx][3]
+                cum_invested += invest_entries[inv_idx][1]
                 inv_idx += 1
         portfolio_values.append(cum_shares * price)
         invested_values.append(cum_invested)
@@ -298,6 +307,9 @@ def run_dca_backtest(
         "final_price": round(final_price, 4),
         "total_shares": round(total_shares, 4),
         "num_investments": len(invest_entries),
+        "total_commissions": round(total_commissions, 2),
+        "sell_commission": round(sell_commission, 2),
+        "stamp_duty_paid": round(sell_stamp, 2),
     }
 
 
@@ -320,6 +332,9 @@ def run_lump_sum_backtest(
     start_date: str,
     end_date: str,
     total_amount: float,
+    commission_rate: float = 0.00025,
+    min_commission: float = 5.0,
+    stamp_duty: float = 0.001,
 ) -> dict:
     """
     一次性投入回测 (用于对比定投)
@@ -356,9 +371,14 @@ def run_lump_sum_backtest(
 
     buy_price = prices.iloc[0]
     buy_date = prices.index[0]
-    shares = total_amount / buy_price
+    buy_commission = max(total_amount * commission_rate, min_commission)
+    buy_commission = min(buy_commission, total_amount)
+    shares = (total_amount - buy_commission) / buy_price
     final_price = prices.iloc[-1]
-    final_value = shares * final_price
+    final_value_before = shares * final_price
+    sell_commission = max(final_value_before * commission_rate, min_commission)
+    sell_stamp = final_value_before * stamp_duty
+    final_value = final_value_before - sell_commission - sell_stamp
     total_return = (final_value - total_amount) / total_amount * 100
 
     # 年化: (final/total)^(1/years) - 1
@@ -376,6 +396,7 @@ def run_lump_sum_backtest(
         "累计份额": round(shares, 4),
         "投入金额": total_amount,
         "累计投入": round(total_amount, 2),
+        "佣金": round(buy_commission, 2),
     }])
 
     # 市值曲线
@@ -395,4 +416,7 @@ def run_lump_sum_backtest(
         "final_price": round(final_price, 4),
         "total_shares": round(shares, 4),
         "num_investments": 1,
+        "total_commissions": round(buy_commission + sell_commission + sell_stamp, 2),
+        "sell_commission": round(sell_commission, 2),
+        "stamp_duty_paid": round(sell_stamp, 2),
     }

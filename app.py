@@ -8,13 +8,15 @@ import sys
 from pathlib import Path
 from datetime import datetime, date
 
+import torch
+
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from data_fetcher import ASSET_TYPE_CONFIG, fetch_history, get_price_series
+from data_fetcher import ASSET_TYPE_CONFIG, fetch_history, get_price_series, add_premium_rate, fetch_etf_realtime_premium, ensure_ohlc
 from backtest.dca import run_dca_backtest, run_lump_sum_backtest, freq_map
 from backtest.strategies import (
     STRATEGY_CATALOG, run_dropbuy_backtest,
@@ -24,7 +26,9 @@ from backtest.strategies import (
 )
 from backtest.rl.trainer import (
     train_dqn, evaluate, run_bh_baseline,
+    predict_signal, compute_signal_history,
 )
+from backtest.rl.dqn_agent import DQNAgent
 from backtest.grid_search import (
     run_grid_search, save_result, list_saved_results, load_result,
 )
@@ -35,6 +39,13 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+if "rl_agent" not in st.session_state:
+    st.session_state.rl_agent = None
+if "rl_model_info" not in st.session_state:
+    st.session_state.rl_model_info = None
+if "rl_model_just_saved" not in st.session_state:
+    st.session_state.rl_model_just_saved = False
 
 # ══════════════════════════════════════════
 #  侧边栏导航 + 公共参数
@@ -132,6 +143,14 @@ def _render_dca_backtest(price_series):
         help="0 表示不设上限",
     )
 
+    with st.sidebar.expander("💰 费率设置", expanded=False):
+        dca_commission = st.number_input("佣金费率", min_value=0.0, value=0.00025, step=0.00005, format="%.5f",
+                                         help="默认万2.5")
+        dca_min_commission = st.number_input("最低佣金(元)", min_value=0.0, value=5.0, step=1.0,
+                                             help="每笔交易最低佣金, 默认5元")
+        dca_stamp_duty = st.number_input("印花税率", min_value=0.0, value=0.001, step=0.0001, format="%.4f",
+                                         help="仅卖出时收取, 默认千1")
+
     include_lump_sum = st.sidebar.checkbox("对比: 一次性投入", value=True)
 
     run_btn = st.sidebar.button("🚀 开始回测", type="primary", width='stretch')
@@ -150,7 +169,7 @@ def _render_dca_backtest(price_series):
     st.subheader("📉 历史价格走势")
     st.plotly_chart(fig_price, width='stretch')
 
-    def _run_all(amount, freqs, day, max_total):
+    def _run_all(amount, freqs, day, max_total, commission, min_comm, stamp):
         results = {}
         for f in freqs:
             r = run_dca_backtest(
@@ -159,6 +178,7 @@ def _render_dca_backtest(price_series):
                 end_date=end_date.strftime("%Y-%m-%d"),
                 frequency=f, amount=float(amount), day=day,
                 max_total=float(max_total),
+                commission_rate=commission, min_commission=min_comm, stamp_duty=stamp,
             )
             if not r["records"].empty:
                 results[r["strategy"]] = r
@@ -178,7 +198,8 @@ def _render_dca_backtest(price_series):
     results = {}
     try:
         with st.spinner("执行回测对比..."):
-            results = _run_all(dca_amount, dca_freqs, dca_day, dca_max_total)
+            results = _run_all(dca_amount, dca_freqs, dca_day, dca_max_total,
+                               dca_commission, dca_min_commission, dca_stamp_duty)
 
             if include_lump_sum:
                 if dca_max_total > 0:
@@ -188,7 +209,10 @@ def _render_dca_backtest(price_series):
                 else:
                     lump_amount = 0
                 if lump_amount > 0:
-                    lump = run_lump_sum_backtest(price_series, start_str, end_str, lump_amount)
+                    lump = run_lump_sum_backtest(price_series, start_str, end_str, lump_amount,
+                                                 commission_rate=dca_commission,
+                                                 min_commission=dca_min_commission,
+                                                 stamp_duty=dca_stamp_duty)
                     if lump["total_invested"] > 0:
                         results["一次性投入"] = lump
     except Exception as e:
@@ -201,14 +225,18 @@ def _render_dca_backtest(price_series):
 
     # 对比表
     st.subheader("🎯 策略对比")
+    has_fees = "total_commissions" in next(iter(results.values()), {})
     comp_data = []
     for name, r in results.items():
-        comp_data.append({
+        entry = {
             "策略": name, "总投入": r["total_invested"],
             "终值": r["final_value"], "总收益率%": r["total_return_pct"],
             "年化收益率%": r["annualized_return_pct"],
             "定投次数": r["num_investments"],
-        })
+        }
+        if has_fees:
+            entry["交易费用"] = r.get("total_commissions", 0)
+        comp_data.append(entry)
     comp_df = pd.DataFrame(comp_data)
 
     def _hlight(val, col):
@@ -217,14 +245,17 @@ def _render_dca_backtest(price_series):
             return "background-color: #2ca02c33" if val == best else ""
         return ""
 
+    cols_to_hlight = ["总收益率%", "年化收益率%"]
+    blank_count = len(comp_df.columns) - len(cols_to_hlight)
     st.dataframe(
         comp_df.style.apply(lambda row: [
             _hlight(row["总收益率%"], "总收益率%"),
             _hlight(row["年化收益率%"], "年化收益率%"),
-            "", "", "", "",
+            *([""] * blank_count),
         ], axis=1).format({
             "总投入": "{:,.2f}", "终值": "{:,.2f}",
             "总收益率%": "{:+.2f}%", "年化收益率%": "{:+.2f}%",
+            "交易费用": "{:,.2f}",
         }),
         width='stretch', hide_index=True,
         column_config={
@@ -232,6 +263,7 @@ def _render_dca_backtest(price_series):
             "终值": st.column_config.NumberColumn(format="%.2f"),
             "总收益率%": st.column_config.NumberColumn(format="+%.2f%%"),
             "年化收益率%": st.column_config.NumberColumn(format="+%.2f%%"),
+            "交易费用": st.column_config.NumberColumn(format="%.2f"),
         },
     )
 
@@ -295,14 +327,18 @@ def _render_dca_backtest(price_series):
     tabs = st.tabs(list(results.keys()))
     for ti, (name, r) in enumerate(results.items()):
         with tabs[ti]:
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("总投入", f"{r['total_invested']:,.2f}")
-            m2.metric("终值", f"{r['final_value']:,.2f}")
-            m3.metric("总收益率", f"{r['total_return_pct']:+.2f}%")
-            m4.metric("年化收益率", f"{r['annualized_return_pct']:+.2f}%")
+            has_fee_cols = "total_commissions" in r
+            cols = st.columns(5 if has_fee_cols else 4)
+            cols[0].metric("总投入", f"{r['total_invested']:,.2f}")
+            cols[1].metric("终值", f"{r['final_value']:,.2f}")
+            cols[2].metric("总收益率", f"{r['total_return_pct']:+.2f}%")
+            cols[3].metric("年化收益率", f"{r['annualized_return_pct']:+.2f}%")
+            if has_fee_cols:
+                cols[4].metric("交易费用", f"{r.get('total_commissions', 0):,.2f}")
             if not r["records"].empty:
                 rec = r["records"].copy()
-                rec["日期"] = rec["日期"].dt.strftime("%Y-%m-%d")
+                if "日期" in rec.columns and hasattr(rec["日期"], "dt"):
+                    rec["日期"] = rec["日期"].dt.strftime("%Y-%m-%d")
                 st.dataframe(rec, width='stretch', hide_index=True)
 
 
@@ -353,6 +389,11 @@ def _render_grid_search(price_series):
         help="实际每期投入 = 日均金额 × 对应频率的交易日乘数",
     )
 
+    with st.expander("💰 费率设置", expanded=False):
+        gs_commission = st.number_input("佣金费率", min_value=0.0, value=0.00025, step=0.00005, format="%.5f", key="gs_commission")
+        gs_min_commission = st.number_input("最低佣金(元)", min_value=0.0, value=5.0, step=1.0, key="gs_min_comm")
+        gs_stamp_duty = st.number_input("印花税率", min_value=0.0, value=0.001, step=0.0001, format="%.4f", key="gs_stamp")
+
     run_compare = st.button("🏁 运行全能对比", type="primary", width='stretch',
                             key="run_compare")
 
@@ -360,6 +401,7 @@ def _render_grid_search(price_series):
         start_str = start_date.strftime("%Y-%m-%d")
         end_str = end_date.strftime("%Y-%m-%d")
         mt = float(compare_max_total)
+        com, mcom, sd = float(gs_commission), float(gs_min_commission), float(gs_stamp_duty)
         results = {}
 
         with st.spinner("正在运行所有策略对比..."):
@@ -373,11 +415,12 @@ def _render_grid_search(price_series):
                     start_date=start_str, end_date=end_str,
                     frequency=f, amount=dca_amt, day=1,
                     max_total=mt,
+                    commission_rate=com, min_commission=mcom, stamp_duty=sd,
                 )
                 if not r["records"].empty:
                     results[r["strategy"]] = r
 
-            # 2. 智能策略
+            # 2. 智能策略 (通过 _build_smart_result 内部已支持佣金)
             sr = run_ma_adjust_dca(price_series, start_date=start_str, end_date=end_str,
                                    amount=dca_amt*22, ma_period=250, max_total=mt)
             if sr["num_investments"] > 0:
@@ -408,6 +451,7 @@ def _render_grid_search(price_series):
                 price_series, X=compare_X, Y=compare_Y,
                 start_date=start_str, end_date=end_str,
                 max_total=mt,
+                commission_rate=com, min_commission=mcom, stamp_duty=sd,
             )
             if db_res.num_investments > 0:
                 label = f"下跌加仓 (X={compare_X:.1f}%, Y={compare_Y:.0f})"
@@ -422,6 +466,9 @@ def _render_grid_search(price_series):
                     "invested_series": db_res.invested_series,
                     "nav_series": db_res.nav_series,
                     "strategy": label,
+                    "total_commissions": db_res.total_commissions,
+                    "sell_commission": db_res.sell_commission,
+                    "stamp_duty_paid": db_res.stamp_duty_paid,
                 }
 
             # 4. 一次性投入
@@ -429,7 +476,8 @@ def _render_grid_search(price_series):
                 next(iter(results.values()))["total_invested"] if results else 0
             )
             if lump_amount > 0:
-                lump = run_lump_sum_backtest(price_series, start_str, end_str, lump_amount)
+                lump = run_lump_sum_backtest(price_series, start_str, end_str, lump_amount,
+                                             commission_rate=com, min_commission=mcom, stamp_duty=sd)
                 if lump["total_invested"] > 0:
                     results["一次性投入"] = lump
 
@@ -438,14 +486,18 @@ def _render_grid_search(price_series):
         else:
             # ── 对比表 ──
             st.subheader("🎯 收益率对比")
+            has_gs_fees = "total_commissions" in next(iter(results.values()), {})
             comp_data = []
             for name, r in results.items():
-                comp_data.append({
+                entry = {
                     "策略": name, "总投入": r["total_invested"],
                     "终值": r["final_value"], "总收益率%": r["total_return_pct"],
                     "年化收益率%": r["annualized_return_pct"],
                     "定投次数": r["num_investments"],
-                })
+                }
+                if has_gs_fees:
+                    entry["交易费用"] = r.get("total_commissions", 0)
+                comp_data.append(entry)
             comp_df = pd.DataFrame(comp_data)
 
             def _hlight(val, col):
@@ -454,14 +506,17 @@ def _render_grid_search(price_series):
                     return "background-color: #2ca02c33" if val == best else ""
                 return ""
 
+            gs_cols_to_hlight = ["总收益率%", "年化收益率%"]
+            gs_blank = len(comp_df.columns) - len(gs_cols_to_hlight)
             st.dataframe(
                 comp_df.style.apply(lambda row: [
                     _hlight(row["总收益率%"], "总收益率%"),
                     _hlight(row["年化收益率%"], "年化收益率%"),
-                    "", "", "", "",
+                    *([""] * gs_blank),
                 ], axis=1).format({
                     "总投入": "{:,.2f}", "终值": "{:,.2f}",
                     "总收益率%": "{:+.2f}%", "年化收益率%": "{:+.2f}%",
+                    "交易费用": "{:,.2f}",
                 }),
                 width='stretch', hide_index=True,
             )
@@ -527,11 +582,14 @@ def _render_grid_search(price_series):
             tabs = st.tabs(list(results.keys()))
             for ti, (name, r) in enumerate(results.items()):
                 with tabs[ti]:
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("总投入", f"{r['total_invested']:,.2f}")
-                    m2.metric("终值", f"{r['final_value']:,.2f}")
-                    m3.metric("总收益率", f"{r['total_return_pct']:+.2f}%")
-                    m4.metric("年化收益率", f"{r['annualized_return_pct']:+.2f}%")
+                    has_gs_fee = "total_commissions" in r
+                    gs_cols = st.columns(5 if has_gs_fee else 4)
+                    gs_cols[0].metric("总投入", f"{r['total_invested']:,.2f}")
+                    gs_cols[1].metric("终值", f"{r['final_value']:,.2f}")
+                    gs_cols[2].metric("总收益率", f"{r['total_return_pct']:+.2f}%")
+                    gs_cols[3].metric("年化收益率", f"{r['annualized_return_pct']:+.2f}%")
+                    if has_gs_fee:
+                        gs_cols[4].metric("交易费用", f"{r.get('total_commissions', 0):,.2f}")
                     if not r["records"].empty:
                         rec = r["records"].copy()
                         if "日期" in rec.columns and hasattr(rec["日期"], "dt"):
@@ -748,10 +806,12 @@ def _render_rl_training(df_full):
     df = df_full.copy()
     df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
 
-    has_required = all(c in df.columns for c in ["开盘价", "收盘价", "最高价", "最低价"])
-    if not has_required:
-        st.warning("当前数据缺少完整的 OHLC 列，强化学习需要开盘/收盘/最高/最低价数据")
-        st.stop()
+    # 场外基金/净值型资产只有收盘价, 用同一价格填充 OHLC 四列
+    df = ensure_ohlc(df)
+
+    # 对 ETF/LOF 添加溢价率列
+    df = add_premium_rate(df, symbol, asset_type)
+    has_premium = "溢价率" in df.columns
 
     # 侧边栏参数
     st.sidebar.markdown("### 🤖 强化学习参数")
@@ -787,8 +847,35 @@ def _render_rl_training(df_full):
 
     run_btn = st.sidebar.button("🚀 开始训练", type="primary", width='stretch')
 
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📂 已保存模型")
+    model_dir = Path("saved_models/rl")
+    model_files = sorted(model_dir.glob("*.pt"), reverse=True) if model_dir.exists() else []
+    if model_files:
+        names = [m.stem for m in model_files]
+        selected_name = st.sidebar.selectbox("选择模型", names, key="rl_model_selector")
+        col_s1, col_s2 = st.sidebar.columns(2)
+        if col_s1.button("📥 加载", width='stretch', key="rl_load_btn"):
+            selected_path = str(model_dir / f"{selected_name}.pt")
+            loaded = DQNAgent.load(selected_path)
+            st.session_state.rl_agent = loaded
+            meta = torch.load(selected_path, map_location="cpu", weights_only=False).get("metadata", {})
+            st.session_state.rl_model_info = {"path": selected_path, "name": selected_name, **meta}
+            st.rerun()
+        if col_s2.button("🗑 删除", width='stretch', key="rl_del_btn"):
+            (model_dir / f"{selected_name}.pt").unlink()
+            if st.session_state.rl_model_info and st.session_state.rl_model_info.get("name") == selected_name:
+                st.session_state.rl_agent = None
+                st.session_state.rl_model_info = None
+            st.rerun()
+    elif st.session_state.rl_model_just_saved:
+        st.sidebar.success("✅ 模型已保存！刷新页面后显示在列表中")
+    else:
+        st.sidebar.caption("暂无已保存的模型")
+
     if not run_btn:
         st.info("👈 在侧边栏设置好参数后，点击「开始训练」")
+        _render_rl_signal(df)
         st.stop()
 
     # 划分数据集
@@ -902,6 +989,113 @@ def _render_rl_training(df_full):
         trades_df = result_dqn["trades"].copy()
         trades_df["日期"] = trades_df["日期"].dt.strftime("%Y-%m-%d")
         st.dataframe(trades_df, width='stretch', hide_index=True)
+
+    # 保存模型
+    save_col1, save_col2 = st.columns([1, 5])
+    with save_col1:
+        if st.button("💾 保存模型", type="primary"):
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_path = Path(f"saved_models/rl/{symbol}_{system_version}_{ts}.pt")
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            agent.save(str(save_path), {
+                "symbol": symbol,
+                "system_version": system_version,
+                "train_start": str(train_start),
+                "train_end": str(train_end),
+                "test_return": result_dqn["total_return_pct"],
+                "sharpe": result_dqn["sharpe_ratio"],
+            })
+            st.session_state.rl_agent = agent
+            meta = {"name": save_path.stem, "path": str(save_path),
+                    "symbol": symbol, "system_version": system_version}
+            st.session_state.rl_model_info = meta
+            st.session_state.rl_model_just_saved = True
+            st.success(f"模型已保存: `{save_path.name}`")
+    with save_col2:
+        st.caption("保存当前训练的 DQN 模型到磁盘，之后可在侧边栏加载使用")
+
+    # 实时信号面板（有加载模型时显示）
+    _render_rl_signal(df)
+
+# ══════════════════════════════════════════
+#  实时信号面板
+# ══════════════════════════════════════════
+
+def _render_rl_signal(df_full):
+    if st.session_state.rl_agent is None:
+        st.info("💡 训练完成后保存模型，或在侧边栏「已保存模型」中加载一个已有模型，即可查看实时信号")
+        return
+
+    st.markdown("---")
+    st.subheader("📡 实时交易信号")
+
+    info = st.session_state.rl_model_info or {}
+    meta_cols = st.columns(4)
+    with meta_cols[0]:
+        st.metric("加载模型", info.get("name", "未知")[:30])
+    with meta_cols[1]:
+        st.metric("资产代码", info.get("symbol", symbol))
+    with meta_cols[2]:
+        ver = info.get("system_version", "1.0")
+        st.metric("系统版本", {"basic": "基础版", "1.0": "系统1.0", "2.0": "系统2.0"}.get(ver, ver))
+    with meta_cols[3]:
+        st.metric("最新日期", str(df_full.index[-1].date()) if len(df_full) > 0 else "-")
+
+    rename_map = {"开盘": "开盘价", "收盘": "收盘价", "最高": "最高价", "最低": "最低价"}
+    df = df_full.copy()
+    df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
+    df = ensure_ohlc(df)
+
+    agent = st.session_state.rl_agent
+    ver = info.get("system_version", "1.0")
+
+    with st.spinner("正在计算信号..."):
+        sig = predict_signal(agent, df, system_version=ver)
+
+    action_map = {-1: ("🔴 卖出", "#ef4444"), 0: ("⚪ 持有", "#6b7280"), 1: ("🟢 买入", "#22c55e")}
+    label, color = action_map.get(sig, ("❓ 未知", "#888888"))
+    st.markdown(
+        f"<div style='text-align:center; padding:24px; background:{color}22; "
+        f"border-radius:12px; border:2px solid {color}'>"
+        f"<span style='font-size:48px; font-weight:bold; color:{color}'>{label}</span>"
+        f"<br><span style='font-size:16px; color:{color}99'>"
+        f"基于 {df.index[-1].date()} 日数据</span></div>",
+        unsafe_allow_html=True,
+    )
+
+    # 显示当前溢价率 (仅 ETF/LOF)
+    if "溢价率" in df.columns:
+        latest_premium = float(df["溢价率"].iloc[-1])
+        premium_color = "#22c55e" if abs(latest_premium) < 1 else "#ef4444"
+        st.markdown(
+            f"<div style='text-align:center; padding:12px; margin:8px 0; "
+            f"border-radius:8px; border:1px solid {premium_color}'>"
+            f"<span style='font-size:14px; color:#888'>当前溢价率</span><br>"
+            f"<span style='font-size:32px; font-weight:bold; color:{premium_color}'>"
+            f"{latest_premium:+.2f}%</span></div>",
+            unsafe_allow_html=True,
+        )
+        # 实时折价率 (仅 ETF)
+        if asset_type == "etf":
+            rt_premium = fetch_etf_realtime_premium(symbol)
+            if rt_premium != 0.0:
+                st.caption(f"实时折价率: {rt_premium:+.2f}% (来自东方财富)")
+
+    with st.expander("📈 近期信号历史", expanded=False):
+        with st.spinner("正在回放信号..."):
+            signals = compute_signal_history(agent, df, system_version=ver)
+        sig_df = pd.DataFrame({
+            "日期": df.index[-60:],
+            "信号": [action_map.get(s, ("?", "#888"))[0] for s in signals[-60:]],
+        })
+        st.dataframe(sig_df, width='stretch', hide_index=True)
+
+    with st.expander("📋 最新行情", expanded=False):
+        tail = df[["开盘价", "收盘价", "最高价", "最低价"]].tail(10)
+        st.dataframe(tail, width='stretch')
+
+    if st.button("🔄 刷新信号", width='stretch'):
+        st.rerun()
 
 
 # ══════════════════════════════════════════

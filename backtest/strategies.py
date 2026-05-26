@@ -218,6 +218,9 @@ class DropBuyResult:
     portfolio_series: pd.Series = field(default_factory=pd.Series)
     invested_series: pd.Series = field(default_factory=pd.Series)
     nav_series: pd.Series = field(default_factory=pd.Series)
+    total_commissions: float = 0.0
+    sell_commission: float = 0.0
+    stamp_duty_paid: float = 0.0
 
 
 def run_dropbuy_backtest(
@@ -227,6 +230,9 @@ def run_dropbuy_backtest(
     max_total: float = 0.0,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    commission_rate: float = 0.00025,
+    min_commission: float = 5.0,
+    stamp_duty: float = 0.001,
 ) -> DropBuyResult:
     """
     下跌加仓策略回测
@@ -277,7 +283,9 @@ def run_dropbuy_backtest(
             actual = max_total - total_invested
             if actual <= 0:
                 break
-        shares = actual / price
+        buy_commission = max(actual * commission_rate, min_commission)
+        buy_commission = min(buy_commission, actual)
+        shares = (actual - buy_commission) / price
         total_shares += shares
         total_invested += actual
         records.append({
@@ -295,7 +303,10 @@ def run_dropbuy_backtest(
         return DropBuyResult(nav_series=prices)
 
     final_price = prices.iloc[-1]
-    final_value = total_shares * final_price
+    final_value_before = total_shares * final_price
+    sell_commission = max(final_value_before * commission_rate, min_commission)
+    sell_stamp = final_value_before * stamp_duty
+    final_value = final_value_before - sell_commission - sell_stamp
     total_return = (final_value - total_invested) / total_invested * 100
 
     cash_flows.append((prices.index[-1].to_pydatetime(), final_value))
@@ -331,6 +342,9 @@ def run_dropbuy_backtest(
         portfolio_series=pd.Series(portfolio_values, index=prices.index),
         invested_series=pd.Series(invested_values, index=prices.index),
         nav_series=prices,
+        total_commissions=round(sell_commission + sell_stamp, 2),
+        sell_commission=round(sell_commission, 2),
+        stamp_duty_paid=round(sell_stamp, 2),
     )
 
 
@@ -369,6 +383,9 @@ def _build_smart_result(
     invest_entries: List[Tuple],  # [(date, amount, price, extra_info_dict?), ...]
     prices: pd.Series,
     max_total: float = 0,
+    commission_rate: float = 0.00025,
+    min_commission: float = 5.0,
+    stamp_duty: float = 0.001,
 ) -> dict:
     """
     通用的策略结果构建器
@@ -382,11 +399,29 @@ def _build_smart_result(
 
     buy_total = sum(amt for _, amt, _ in cleaned if amt > 0)
     sell_total = sum(abs(amt) for _, amt, _ in cleaned if amt < 0)
-    total_shares = sum(amt / p for _, amt, p in cleaned)
+
+    # 累积份额 (考虑买入佣金; 卖出时份额减少不受佣金影响, 但佣金属额外成本)
+    total_shares = 0.0
+    total_commissions = 0.0
+    for _, amt, price in cleaned:
+        if amt > 0:
+            buy_commission = max(amt * commission_rate, min_commission)
+            buy_commission = min(buy_commission, amt)
+            total_commissions += buy_commission
+            total_shares += (amt - buy_commission) / price
+        else:
+            sell_amt = abs(amt)
+            sell_commission = max(sell_amt * commission_rate, min_commission)
+            sell_stamp_amt = sell_amt * stamp_duty
+            total_commissions += sell_commission + sell_stamp_amt
+            total_shares -= sell_amt / price  # 卖出份额
 
     final_price = float(prices.iloc[-1])
-    final_value = total_shares * final_price
-    net_invested = buy_total - sell_total
+    final_value_before = total_shares * final_price
+    sell_commission_final = max(final_value_before * commission_rate, min_commission)
+    sell_stamp_final = final_value_before * stamp_duty
+    final_value = final_value_before - sell_commission_final - sell_stamp_final
+    total_commissions += sell_commission_final + sell_stamp_final
     total_return = (final_value - buy_total) / max(buy_total, 1e-9) * 100
 
     cash_flows = [(d.to_pydatetime(), -amt) for d, amt, _ in cleaned]
@@ -397,7 +432,13 @@ def _build_smart_result(
     cs, ci = 0.0, 0.0
     for d, amt, price in cleaned:
         is_buy = amt > 0
-        shares = amt / price
+        if is_buy:
+            buy_comm = max(amt * commission_rate, min_commission)
+            buy_comm = min(buy_comm, amt)
+            shares = (amt - buy_comm) / price
+        else:
+            sell_amt = abs(amt)
+            shares = -sell_amt / price  # 负值
         cs += shares
         ci += amt
         label = "买入" if is_buy else "卖出"
@@ -418,8 +459,15 @@ def _build_smart_result(
     for dt, price in prices.items():
         if idx < n and dt >= cleaned[idx][0]:
             while idx < n and dt >= cleaned[idx][0]:
-                cs += cleaned[idx][1] / cleaned[idx][2]
-                ci += cleaned[idx][1]
+                d, amt, pv = cleaned[idx]
+                if amt > 0:
+                    buy_comm = max(amt * commission_rate, min_commission)
+                    buy_comm = min(buy_comm, amt)
+                    cs += (amt - buy_comm) / pv
+                else:
+                    sell_amt = abs(amt)
+                    cs -= sell_amt / pv
+                ci += amt
                 idx += 1
         portfolio_vals.append(cs * price)
         invested_vals.append(ci)
@@ -435,6 +483,9 @@ def _build_smart_result(
         "nav_series": prices,
         "portfolio_series": pd.Series(portfolio_vals, index=prices.index),
         "invested_series": pd.Series(invested_vals, index=prices.index),
+        "total_commissions": round(total_commissions, 2),
+        "sell_commission": round(sell_commission_final, 2),
+        "stamp_duty_paid": round(sell_stamp_final, 2),
     }
 
 

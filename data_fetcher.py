@@ -16,6 +16,7 @@ from typing import Optional, Literal
 from datetime import datetime, date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -503,6 +504,71 @@ def get_etf_list() -> pd.DataFrame:
 def get_open_fund_list() -> pd.DataFrame:
     df = ak.fund_open_fund_daily_em()
     return df[["基金代码", "基金简称"]] if not df.empty else df
+
+
+def ensure_ohlc(df: pd.DataFrame) -> pd.DataFrame:
+    """确保 DataFrame 包含 OHLC 四列, 缺失的列用可用价格列填充"""
+    df_out = df.copy()
+    price_col = None
+    for c in ["收盘", "收盘价", "收盘价(元)", "close"]:
+        if c in df_out.columns:
+            price_col = c
+            break
+    if price_col is None:
+        return df_out
+    for target in ["开盘", "最高", "最低"]:
+        if target not in df_out.columns:
+            df_out[target] = df_out[price_col]
+    return df_out
+
+
+def add_premium_rate(
+    df: pd.DataFrame,
+    symbol: str,
+    asset_type: str = "etf",
+) -> pd.DataFrame:
+    """向 OHLCV DataFrame 添加溢价率列 (仅对 ETF/LOF 有效).
+    
+    溢价率 = (收盘价 - 单位净值) / 单位净值 × 100
+    """
+    if asset_type not in ("etf", "lof"):
+        return df
+    df_out = df.copy()
+    close_col = None
+    for c in ["收盘", "收盘价", "close"]:
+        if c in df_out.columns:
+            close_col = c
+            break
+    if close_col is None:
+        df_out["溢价率"] = 0.0
+        return df_out
+    try:
+        nav_df = fetch_etf_nav_history(symbol)
+        if not nav_df.empty and "单位净值" in nav_df.columns:
+            nav = nav_df["单位净值"]
+            df_out["单位净值"] = nav.reindex(df_out.index, method="ffill", tolerance=5)
+            df_out["溢价率"] = np.where(
+                df_out["单位净值"].notna() & (df_out["单位净值"] != 0),
+                (df_out[close_col] - df_out["单位净值"]) / df_out["单位净值"] * 100,
+                0.0,
+            )
+        else:
+            df_out["溢价率"] = 0.0
+    except Exception:
+        df_out["溢价率"] = 0.0
+    return df_out
+
+
+def fetch_etf_realtime_premium(symbol: str) -> float:
+    """获取 ETF 实时折价率 (正=溢价 负=折价)."""
+    try:
+        df = ak.fund_etf_spot_em()
+        row = df[df["代码"] == symbol]
+        if not row.empty:
+            return float(row.iloc[0].get("基金折价率", 0))
+    except Exception:
+        pass
+    return 0.0
 
 
 _clear_expired()

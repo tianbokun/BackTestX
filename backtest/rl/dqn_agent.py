@@ -1,5 +1,7 @@
+import json
 import numpy as np
 from collections import deque
+from pathlib import Path
 import random
 
 import torch
@@ -119,3 +121,35 @@ class DQNAgent:
 
         if self.step_count % self.target_update == 0:
             self.target_net.load_state_dict(self.q_net.state_dict())
+
+    def save(self, path: str, metadata: dict = None):
+        data = {
+            "state_dim": self.q_net.net[0].in_features,
+            "hidden": self.q_net.net[0].out_features,
+            "n_actions": self.n_actions,
+            "q_net_state": self.q_net.state_dict(),
+            "target_net_state": self.target_net.state_dict(),
+            "optimizer_state": self.optimizer.state_dict(),
+            "epsilon": self.epsilon,
+            "step_count": self.step_count,
+            "losses": self.losses,
+            "metadata": metadata or {},
+        }
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        torch.save(data, path)
+
+    @staticmethod
+    def load(path: str):
+        data = torch.load(path, map_location="cpu")
+        agent = DQNAgent(
+            state_dim=data["state_dim"],
+            hidden=data["hidden"],
+            n_actions=data["n_actions"],
+        )
+        agent.q_net.load_state_dict(data["q_net_state"])
+        agent.target_net.load_state_dict(data["target_net_state"])
+        agent.optimizer.load_state_dict(data["optimizer_state"])
+        agent.epsilon = data["epsilon"]
+        agent.step_count = data["step_count"]
+        agent.losses = data["losses"]
+        return agent

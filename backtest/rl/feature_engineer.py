@@ -111,6 +111,11 @@ def compute_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["RSI12"] = _rsi(close, 12)
     out["RSI24"] = _rsi(close, 24)
 
+    if "溢价率" in ohclv.columns:
+        out["溢价率"] = ohclv["溢价率"].values.astype(float)
+    else:
+        out["溢价率"] = np.zeros(len(ohclv))
+
     return out
 
 
@@ -124,7 +129,8 @@ def get_state_vector(
     cols = ["close", "MA5", "MA10", "MA30", "MA120", "EMA30",
             "BB_mid", "ATR", "ADX", "CCI",
             "KDJ_K", "KDJ_D", "KDJ_J",
-            "RSI6", "RSI12", "RSI24", "volume"]
+            "RSI6", "RSI12", "RSI24", "volume",
+            "溢价率"]
     if system_version == "basic":
         return np.array([df_indicators["close"].iloc[t]], dtype=np.float32)
     vec = df_indicators[cols].iloc[t].values.astype(np.float32)
@@ -139,7 +145,7 @@ def get_state_vector(
 def get_state_dim(system_version: str) -> int:
     if system_version == "basic":
         return 1
-    base = 17
+    base = 18
     if system_version == "2.0":
         base += 2
     return base

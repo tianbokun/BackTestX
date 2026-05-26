@@ -33,7 +33,9 @@ def train_dqn(
     epsilon_start: float = 0.9,
     epsilon_end: float = 0.01,
     epsilon_decay: float = 500,
-    transaction_cost: float = 0.0001,
+    commission_rate: float = 0.00025,
+    min_commission: float = 5.0,
+    stamp_duty: float = 0.001,
     initial_capital: float = 1.0,
     progress_callback=None,
 ) -> tuple:
@@ -71,7 +73,9 @@ def train_dqn(
         env = StockTradingEnv(
             state_vectors, close, dates,
             initial_capital=initial_capital,
-            transaction_cost=transaction_cost,
+            commission_rate=commission_rate,
+            min_commission=min_commission,
+            stamp_duty=stamp_duty,
         )
         state = env.reset()
         done = False
@@ -93,7 +97,9 @@ def evaluate(
     df_test: pd.DataFrame,
     system_version: str = "1.0",
     initial_capital: float = 1.0,
-    transaction_cost: float = 0.0001,
+    commission_rate: float = 0.00025,
+    min_commission: float = 5.0,
+    stamp_duty: float = 0.001,
 ) -> dict:
     close = _close_col(df_test)
     indicators = compute_technical_indicators(df_test)
@@ -111,7 +117,9 @@ def evaluate(
     env = StockTradingEnv(
         state_vectors, close, df_test.index.tolist(),
         initial_capital=initial_capital,
-        transaction_cost=transaction_cost,
+        commission_rate=commission_rate,
+        min_commission=min_commission,
+        stamp_duty=stamp_duty,
     )
     state = env.reset()
     done = False
@@ -178,3 +186,36 @@ def run_bh_baseline(
         "equity_curve": pv,
         "dates": df_test.index,
     }
+
+
+def predict_signal(
+    agent: DQNAgent,
+    df: pd.DataFrame,
+    system_version: str = "1.0",
+) -> int:
+    close = _close_col(df)
+    indicators = compute_technical_indicators(df)
+    svm_sig, xgb_sig = None, None
+    if system_version == "2.0":
+        svm_sig, xgb_sig = compute_svm_xgb_signals(df)
+    t = len(close) - 1
+    state = get_state_vector(indicators, t, system_version, svm_sig, xgb_sig)
+    return int(agent.act(state, eval_mode=True))
+
+
+def compute_signal_history(
+    agent: DQNAgent,
+    df: pd.DataFrame,
+    system_version: str = "1.0",
+) -> list:
+    close = _close_col(df)
+    indicators = compute_technical_indicators(df)
+    svm_sig, xgb_sig = None, None
+    if system_version == "2.0":
+        svm_sig, xgb_sig = compute_svm_xgb_signals(df)
+    signals = []
+    for t in range(len(close)):
+        state = get_state_vector(indicators, t, system_version, svm_sig, xgb_sig)
+        action = int(agent.act(state, eval_mode=True))
+        signals.append(action)
+    return signals

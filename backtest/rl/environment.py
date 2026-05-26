@@ -8,14 +8,18 @@ class StockTradingEnv:
         close_prices: np.ndarray,
         dates: list,
         initial_capital: float = 1.0,
-        transaction_cost: float = 0.0001,
+        commission_rate: float = 0.00025,
+        min_commission: float = 5.0,
+        stamp_duty: float = 0.001,
         reward_window: int = 10,
     ):
         self.state_vectors = state_vectors
         self.close = close_prices
         self.dates = dates
         self.initial_capital = initial_capital
-        self.tc = transaction_cost
+        self.cr = commission_rate
+        self.min_c = min_commission
+        self.sd = stamp_duty
         self.reward_window = reward_window
         self.n_steps = len(close_prices)
 
@@ -38,45 +42,41 @@ class StockTradingEnv:
 
     def step(self, action: int):
         price = self.close[self.t]
-        pv_before = self._portfolio_value()
 
         if action == 1:
-            affordable = self.cash * (1 - self.tc) / price
-            cost = affordable * price
-            fee = cost * self.tc
-            actual_spend = cost + fee
-            if actual_spend <= self.cash:
-                self.cash -= actual_spend
-                self.shares += affordable
+            if self.cash > 0:
+                shares_bought = self.cash / (price * (1 + self.cr))
+                cost = shares_bought * price
+                commission = max(cost * self.cr, self.min_c)
+                total = cost + commission
+                if total <= self.cash and cost > 0:
+                    self.cash -= total
+                    self.shares += shares_bought
         elif action == -1:
             if self.shares > 0:
                 proceeds = self.shares * price
-                fee = proceeds * self.tc
-                self.cash += proceeds - fee
+                commission = max(proceeds * self.cr, self.min_c)
+                tax = proceeds * self.sd
+                self.cash += proceeds - commission - tax
                 self.shares = 0.0
 
         self.t += 1
-        pv_after = self._portfolio_value()
-        self.portfolio_values.append(pv_after)
+        pv = self._portfolio_value()
+        self.portfolio_values.append(pv)
         self.actions_taken.append(action)
 
         if self.t >= self.n_steps - 1:
             self.done = True
-            pv_final = self._portfolio_value()
-            reward = (pv_final - self.initial_capital) / self.initial_capital * 100
+            reward = (pv - self.initial_capital) / self.initial_capital * 100
             return self._get_state(), reward, self.done
 
-        reward = self._calc_reward(pv_before, pv_after, action)
+        reward = self._calc_reward()
         return self._get_state(), reward, self.done
 
-    def _calc_reward(self, pv_before, pv_after, action):
+    def _calc_reward(self):
         n = min(self.reward_window, self.t - 1)
         if n < 1:
             return 0.0
-        pv_window_start = self.portfolio_values[-n] if n <= len(self.portfolio_values) else self.initial_capital
-        ret = (pv_after - pv_window_start) / max(pv_window_start, 1e-9)
-        trade_cost = 0.0
-        if action != 0:
-            trade_value = abs(pv_after - pv_before)
-            trade_cost = trade_value * self.tc
-        return float(ret - trade_cost)
+        pv_now = self.portfolio_values[-1]
+        pv_start = self.portfolio_values[-n] if n <= len(self.portfolio_values) else self.initial_capital
+        return float((pv_now - pv_start) / max(pv_start, 1e-9))
