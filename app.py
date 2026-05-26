@@ -27,6 +27,7 @@ from backtest.strategies import (
 from backtest.rl.trainer import (
     train_dqn, evaluate, run_bh_baseline,
     predict_signal, compute_signal_history,
+    hyperparam_search,
 )
 from backtest.rl.dqn_agent import DQNAgent
 from backtest.grid_search import (
@@ -46,6 +47,10 @@ if "rl_model_info" not in st.session_state:
     st.session_state.rl_model_info = None
 if "rl_model_just_saved" not in st.session_state:
     st.session_state.rl_model_just_saved = False
+if "rl_hp_agent" not in st.session_state:
+    st.session_state.rl_hp_agent = None
+if "rl_hp_params" not in st.session_state:
+    st.session_state.rl_hp_params = None
 
 # ══════════════════════════════════════════
 #  侧边栏导航 + 公共参数
@@ -89,19 +94,23 @@ adjust = st.sidebar.selectbox(
 #  数据获取 (公共)
 # ══════════════════════════════════════════
 
+@st.cache_data(ttl=300, show_spinner="正在获取数据...")
+def _cached_fetch(symbol, asset_type, start_str, end_str, adjust):
+    return fetch_history(
+        asset_type=asset_type, symbol=symbol,
+        start_date=start_str, end_date=end_str, adjust=adjust,
+    )
+
+
 def _fetch_data():
     if not symbol:
         st.info(f"👈 请在侧边栏输入{asset_config['label']}代码后开始")
         st.stop()
     df = None
     try:
-        with st.spinner(f"正在获取 {symbol} 历史数据..."):
-            df = fetch_history(
-                asset_type=asset_type, symbol=symbol,
-                start_date=start_date.strftime("%Y%m%d"),
-                end_date=end_date.strftime("%Y%m%d"),
-                adjust=adjust,
-            )
+        start_str = start_date.strftime("%Y%m%d")
+        end_str = end_date.strftime("%Y%m%d")
+        df = _cached_fetch(symbol, asset_type, start_str, end_str, adjust)
     except Exception as e:
         st.error(f"数据获取失败: {e}")
         st.stop()
@@ -817,8 +826,11 @@ def _render_rl_training(df_full):
     st.sidebar.markdown("### 🤖 强化学习参数")
 
     train_start = st.sidebar.date_input("训练集开始", value=df.index[0].date() if len(df) > 0 else date.today())
-    train_end = st.sidebar.date_input("训练集结束", value=df.index[len(df)//2].date() if len(df) > 1 else date.today())
-    test_start = st.sidebar.date_input("测试集开始", value=train_end)
+    train_end = st.sidebar.date_input("训练集结束", value=df.index[len(df)//3].date() if len(df) > 2 else date.today())
+    val_start = st.sidebar.date_input("验证集开始", value=train_end)
+    val_end = st.sidebar.date_input("验证集结束",
+                                     value=df.index[2*len(df)//3].date() if len(df) > 2 else date.today())
+    test_start = st.sidebar.date_input("测试集开始", value=val_end)
     test_end = st.sidebar.date_input("测试集结束", value=df.index[-1].date())
 
     system_version = st.sidebar.selectbox(
@@ -833,6 +845,14 @@ def _render_rl_training(df_full):
         help="basic=仅过去30日收盘价, 1.0=加入技术指标, 2.0=加入SVM/XGBoost涨跌信号",
     )
 
+    with st.sidebar.expander("💰 费率设置", expanded=False):
+        rl_commission = st.number_input("佣金费率", min_value=0.0, value=0.00025, step=0.00005, format="%.5f",
+                                        key="rl_commission")
+        rl_min_commission = st.number_input("最低佣金(元)", min_value=0.0, value=5.0, step=1.0,
+                                            key="rl_min_comm")
+        rl_stamp_duty = st.number_input("印花税率", min_value=0.0, value=0.001, step=0.0001, format="%.4f",
+                                        key="rl_stamp")
+
     with st.sidebar.expander("⚙️ DQN 超参数", expanded=False):
         n_episodes = st.number_input("训练轮数", min_value=10, value=64, step=10)
         batch_size = st.number_input("Batch 大小", min_value=32, value=200, step=32)
@@ -845,6 +865,7 @@ def _render_rl_training(df_full):
         target_update = st.number_input("目标网络更新间隔", min_value=10, value=50, step=10)
         buffer_capacity = st.number_input("经验回放容量", min_value=1000, value=10000, step=1000)
 
+    search_btn = st.sidebar.button("🔍 超参搜索", width='stretch')
     run_btn = st.sidebar.button("🚀 开始训练", type="primary", width='stretch')
 
     st.sidebar.markdown("---")
@@ -873,13 +894,9 @@ def _render_rl_training(df_full):
     else:
         st.sidebar.caption("暂无已保存的模型")
 
-    if not run_btn:
-        st.info("👈 在侧边栏设置好参数后，点击「开始训练」")
-        _render_rl_signal(df)
-        st.stop()
-
-    # 划分数据集
+    # ── 划分数据集 ──
     df_train = df[(df.index >= pd.Timestamp(train_start)) & (df.index <= pd.Timestamp(train_end))].copy()
+    df_val = df[(df.index >= pd.Timestamp(val_start)) & (df.index <= pd.Timestamp(val_end))].copy()
     df_test = df[(df.index >= pd.Timestamp(test_start)) & (df.index <= pd.Timestamp(test_end))].copy()
 
     if len(df_train) < 50:
@@ -889,133 +906,277 @@ def _render_rl_training(df_full):
         st.error(f"测试数据不足 ({len(df_test)} 行)，请扩大测试集")
         st.stop()
 
-    st.info(f"训练集: {train_start} ~ {train_end} ({len(df_train)} 个交易日)")
-    st.info(f"测试集: {test_start} ~ {test_end} ({len(df_test)} 个交易日)")
+    fee_params = dict(commission_rate=float(rl_commission),
+                      min_commission=float(rl_min_commission),
+                      stamp_duty=float(rl_stamp_duty))
 
-    # 训练进度
-    progress_bar = st.progress(0)
-    loss_chart = st.empty()
-    loss_data = []
+    # ── 超参搜索 ──
+    if search_btn:
+        if len(df_val) < 20:
+            st.error(f"验证集数据不足 ({len(df_val)} 行)，至少需要 20 行")
+            st.stop()
+        df_hp = pd.concat([df_train, df_val]).sort_index()
+        total_days = len(df_hp)
+        st.info(f"超参搜索窗口: {df_hp.index[0].date()} ~ {df_hp.index[-1].date()} ({total_days} 行)")
 
-    def _progress(ep, total, loss):
-        progress_bar.progress((ep + 1) / total)
-        if loss > 0:
-            loss_data.append((ep, loss))
-        if len(loss_data) > 1:
-            import plotly.graph_objects as go
-            ldf = pd.DataFrame(loss_data, columns=["ep", "loss"])
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=ldf["ep"], y=ldf["loss"], mode="lines", name="Loss"))
-            fig.update_layout(height=250, margin=dict(l=10, r=10, t=10, b=10),
-                              xaxis_title="Step", yaxis_title="Loss")
-            loss_chart.plotly_chart(fig, width='stretch')
+        hp_header = st.empty()
+        hp_header.info(f"⏳ 超参搜索: 324 组合 × 3 折 = 972 次训练, 请耐心等待...")
 
-    try:
-        params = {
-            "n_episodes": int(n_episodes),
-            "batch_size": int(batch_size),
-            "lr": float(lr),
-            "gamma": float(gamma),
-            "hidden": int(hidden),
-            "epsilon_start": float(epsilon_start),
-            "epsilon_end": float(epsilon_end),
-            "epsilon_decay": int(epsilon_decay),
-            "target_update": int(target_update),
-            "buffer_capacity": int(buffer_capacity),
-        }
-    except ValueError:
-        st.error("超参数格式错误，请检查数字格式")
+        progress_bar = st.progress(0)
+        fold_bar = st.progress(0)
+        detail_box = st.empty()
+        log_box = st.empty()
+
+        from collections import deque
+        import time
+        _hp_start = time.time()
+        _hp_recent = deque(maxlen=5)
+
+        def _hp_fold_callback(ci, total, fi, nf, params, fold_sharpe):
+            elapsed = time.time() - _hp_start
+            total_folds = total * nf
+            folds_done = ci * nf + fi + 1
+            pct = folds_done / total_folds * 100
+
+            progress_bar.progress(folds_done / total_folds)
+            fold_bar.progress((fi + 1) / nf)
+
+            avg_time = elapsed / folds_done
+            remaining = avg_time * (total_folds - folds_done)
+            remaining_str = f"{remaining/60:.0f} 分" if remaining < 3600 else f"{remaining/3600:.1f} 时"
+
+            p_str = ", ".join(f"{k}={v}" for k, v in sorted(params.items()))
+            sign = "+" if fold_sharpe >= 0 else ""
+            detail_box.code(
+                f"组合 {ci+1}/{total} | 折 {fi+1}/{nf}\n"
+                f"参数: {p_str}\n"
+                f"本折夏普: {sign}{fold_sharpe:.4f}\n"
+                f"已用: {elapsed/60:.1f} 分 | 预计剩余: ~{remaining_str}\n"
+                f"总体: {folds_done}/{total_folds} 训练 ({pct:.2f}%)"
+            )
+
+        def _hp_combo_callback(ci, total, best_params, best_score):
+            nf = 3
+            folds_done = (ci + 1) * nf
+            total_folds = total * nf
+            pct = folds_done / total_folds * 100
+
+            fold_bar.progress(0)
+            elapsed = time.time() - _hp_start
+
+            hp_header.info(
+                f"⏳ 搜索中: {folds_done}/{total_folds} ({pct:.2f}%) | "
+                f"已用 {elapsed/60:.1f} 分 | "
+                f"当前最优: 夏普={best_score:.4f}"
+            )
+
+            if best_params and best_score > -999:
+                _hp_recent.append((ci, best_score))
+
+            # 最近 5 个 combo 的得分日志
+            log_lines = ["最近 5 个最优得分 (更新时):"]
+            for idx, sc in _hp_recent:
+                log_lines.append(f"  #{idx+1:>3d}  夏普={sc:+.4f}")
+            log_lines.append(f"  🏆 当前最优: 夏普={best_score:.4f}")
+            log_box.code("\n".join(log_lines))
+
+        try:
+            hp_result = hyperparam_search(
+                df_hp, system_version=system_version,
+                progress_callback=None,
+                combo_callback=_hp_combo_callback,
+                fold_callback=_hp_fold_callback,
+                **fee_params,
+            )
+        except Exception as e:
+            st.error(f"超参搜索失败: {e}")
+            st.stop()
+
+        progress_bar.empty()
+        fold_bar.empty()
+        detail_box.empty()
+        log_box.empty()
+        hp_header.empty()
+
+        bp = hp_result.get("best_params")
+        bs = hp_result.get("best_score", -999)
+
+        if bp is None:
+            st.error(hp_result.get("error", "搜索失败"))
+            st.stop()
+
+        elapsed_total = hp_result.get("elapsed_sec", 0)
+        st.success(f"✅ 搜索完成! 耗时 {elapsed_total/60:.1f} 分 | "
+                   f"最优: lr={bp['lr']}, gamma={bp['gamma']}, "
+                   f"hidden={bp['hidden']}, n_episodes={bp['n_episodes']}, "
+                   f"epsilon_decay={bp['epsilon_decay']}  |  验证夏普={bs:.4f}")
+
+        # 用最优参数在训练集上训练, 在验证集上评估
+        st.markdown("### 📊 验证集回测结果 (最优参数)")
+        with st.spinner("正在训练/回测..."):
+            best_agent, _ = train_dqn(
+                df_train, system_version=system_version,
+                n_episodes=bp["n_episodes"], lr=bp["lr"], gamma=bp["gamma"],
+                hidden=bp["hidden"], epsilon_decay=bp["epsilon_decay"],
+                progress_callback=None, **fee_params,
+            )
+            val_result = evaluate(best_agent, df_val, system_version=system_version, **fee_params)
+            bh_val = run_bh_baseline(df_val)
+
+        comp_val = pd.DataFrame([
+            {"策略": "DQN", "最终金额": val_result["final_value"],
+             "收益率%": val_result["total_return_pct"], "夏普比率": val_result["sharpe_ratio"],
+             "最大回撤%": val_result["max_drawdown_pct"], "交易次数": val_result["num_trades"]},
+            {"策略": "买入持有(BH)", "最终金额": bh_val["final_value"],
+             "收益率%": bh_val["total_return_pct"], "夏普比率": bh_val["sharpe_ratio"],
+             "最大回撤%": bh_val["max_drawdown_pct"], "交易次数": "-"},
+        ])
+        st.dataframe(comp_val, width='stretch', hide_index=True)
+
+        if not val_result["trades"].empty:
+            with st.expander("📝 交易记录"):
+                td = val_result["trades"].copy()
+                td["日期"] = td["日期"].dt.strftime("%Y-%m-%d")
+                st.dataframe(td, width='stretch', hide_index=True)
+
+        st.session_state.rl_hp_agent = best_agent
+        st.session_state.rl_hp_params = bp
+        st.session_state.rl_hp_score = bs
+
+    # ── 训练 ──
+    if not run_btn and not search_btn:
+        st.info("👈 在侧边栏设置好参数后，点击「开始训练」或「超参搜索」")
+        _render_rl_signal(df)
         st.stop()
 
-    with st.spinner("正在训练 DQN 智能体..."):
-        agent, _ = train_dqn(
-            df_train, system_version=system_version,
-            progress_callback=_progress,
-            **params,
+    if run_btn:
+        st.markdown("---")
+        st.subheader("📊 训练与测试")
+
+        # 训练进度
+        progress_bar = st.progress(0)
+        loss_chart = st.empty()
+        loss_data = []
+
+        def _progress(ep, total, loss):
+            progress_bar.progress((ep + 1) / total)
+            if loss > 0:
+                loss_data.append((ep, loss))
+            if len(loss_data) > 1:
+                import plotly.graph_objects as go
+                ldf = pd.DataFrame(loss_data, columns=["ep", "loss"])
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=ldf["ep"], y=ldf["loss"], mode="lines", name="Loss"))
+                fig.update_layout(height=250, margin=dict(l=10, r=10, t=10, b=10),
+                                  xaxis_title="Step", yaxis_title="Loss")
+                loss_chart.plotly_chart(fig, width='stretch')
+
+        try:
+            params = {
+                "n_episodes": int(n_episodes),
+                "batch_size": int(batch_size),
+                "lr": float(lr),
+                "gamma": float(gamma),
+                "hidden": int(hidden),
+                "epsilon_start": float(epsilon_start),
+                "epsilon_end": float(epsilon_end),
+                "epsilon_decay": int(epsilon_decay),
+                "target_update": int(target_update),
+                "buffer_capacity": int(buffer_capacity),
+            }
+        except ValueError:
+            st.error("超参数格式错误，请检查数字格式")
+            st.stop()
+
+        with st.spinner("正在训练 DQN 智能体..."):
+            agent, _ = train_dqn(
+                df_train, system_version=system_version,
+                progress_callback=_progress,
+                **params, **fee_params,
+            )
+
+        st.success("✅ 训练完成！")
+
+        # 测试集评估
+        st.markdown("---")
+        st.subheader("📊 测试集回测结果")
+
+        with st.spinner("正在回测..."):
+            result_dqn = evaluate(agent, df_test, system_version=system_version, **fee_params)
+            result_bh = run_bh_baseline(df_test)
+
+        # 指标对比表
+        st.markdown("#### 📋 策略指标对比")
+        comp = pd.DataFrame([
+            {"策略": "DQN", "最终金额": result_dqn["final_value"],
+             "收益率%": result_dqn["total_return_pct"],
+             "夏普比率": result_dqn["sharpe_ratio"],
+             "最大回撤%": result_dqn["max_drawdown_pct"],
+             "交易次数": result_dqn["num_trades"]},
+            {"策略": "买入持有(BH)", "最终金额": result_bh["final_value"],
+             "收益率%": result_bh["total_return_pct"],
+             "夏普比率": result_bh["sharpe_ratio"],
+             "最大回撤%": result_bh["max_drawdown_pct"],
+             "交易次数": "-"},
+        ])
+        st.dataframe(comp, width='stretch', hide_index=True)
+
+        # 累计利润图
+        st.markdown("#### 📈 累计利润对比")
+        import plotly.graph_objects as go
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=df_test.index, y=result_dqn["equity_curve"],
+            mode="lines", name=f"DQN ({system_version})",
+            line=dict(color="#1f77b4", width=2),
+        ))
+        fig.add_trace(go.Scatter(
+            x=df_test.index, y=result_bh["equity_curve"],
+            mode="lines", name="买入持有(BH)",
+            line=dict(color="#ff7f0e", width=2, dash="dash"),
+        ))
+        fig.add_hline(y=1.0, line_dash="dot", line_color="gray", annotation_text="初始本金")
+        fig.update_layout(
+            xaxis_title="日期", yaxis_title="账户总值 (初始=1.0)",
+            hovermode="x unified", height=400,
+            margin=dict(l=10, r=10, t=10, b=10),
+            legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
         )
+        st.plotly_chart(fig, width='stretch')
 
-    st.success("✅ 训练完成！")
+        # 交易记录
+        if not result_dqn["trades"].empty:
+            st.markdown("#### 📝 交易记录")
+            trades_df = result_dqn["trades"].copy()
+            trades_df["日期"] = trades_df["日期"].dt.strftime("%Y-%m-%d")
+            st.dataframe(trades_df, width='stretch', hide_index=True)
 
-    # 测试集评估
-    st.markdown("---")
-    st.subheader("📊 测试集回测结果")
+        # 保存模型
+        save_col1, save_col2 = st.columns([1, 5])
+        with save_col1:
+            if st.button("💾 保存模型", type="primary"):
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                save_path = Path(f"saved_models/rl/{symbol}_{system_version}_{ts}.pt")
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+                agent.save(str(save_path), {
+                    "symbol": symbol,
+                    "system_version": system_version,
+                    "train_start": str(train_start),
+                    "train_end": str(train_end),
+                    "test_return": result_dqn["total_return_pct"],
+                    "sharpe": result_dqn["sharpe_ratio"],
+                })
+                st.session_state.rl_agent = agent
+                meta = {"name": save_path.stem, "path": str(save_path),
+                        "symbol": symbol, "system_version": system_version}
+                st.session_state.rl_model_info = meta
+                st.session_state.rl_model_just_saved = True
+                st.success(f"模型已保存: `{save_path.name}`")
+        with save_col2:
+            st.caption("保存当前训练的 DQN 模型到磁盘，之后可在侧边栏加载使用")
 
-    with st.spinner("正在回测..."):
-        result_dqn = evaluate(agent, df_test, system_version=system_version)
-        result_bh = run_bh_baseline(df_test)
-
-    # 指标对比表
-    st.markdown("#### 📋 策略指标对比")
-    comp = pd.DataFrame([
-        {"策略": "DQN", "最终金额": result_dqn["final_value"],
-         "收益率%": result_dqn["total_return_pct"],
-         "夏普比率": result_dqn["sharpe_ratio"],
-         "最大回撤%": result_dqn["max_drawdown_pct"],
-         "交易次数": result_dqn["num_trades"]},
-        {"策略": "买入持有(BH)", "最终金额": result_bh["final_value"],
-         "收益率%": result_bh["total_return_pct"],
-         "夏普比率": result_bh["sharpe_ratio"],
-         "最大回撤%": result_bh["max_drawdown_pct"],
-         "交易次数": "-"},
-    ])
-    st.dataframe(comp, width='stretch', hide_index=True)
-
-    # 累计利润图
-    st.markdown("#### 📈 累计利润对比")
-    import plotly.graph_objects as go
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df_test.index, y=result_dqn["equity_curve"],
-        mode="lines", name=f"DQN ({system_version})",
-        line=dict(color="#1f77b4", width=2),
-    ))
-    fig.add_trace(go.Scatter(
-        x=df_test.index, y=result_bh["equity_curve"],
-        mode="lines", name="买入持有(BH)",
-        line=dict(color="#ff7f0e", width=2, dash="dash"),
-    ))
-    fig.add_hline(y=1.0, line_dash="dot", line_color="gray", annotation_text="初始本金")
-    fig.update_layout(
-        xaxis_title="日期", yaxis_title="账户总值 (初始=1.0)",
-        hovermode="x unified", height=400,
-        margin=dict(l=10, r=10, t=10, b=10),
-        legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
-    )
-    st.plotly_chart(fig, width='stretch')
-
-    # 交易记录
-    if not result_dqn["trades"].empty:
-        st.markdown("#### 📝 交易记录")
-        trades_df = result_dqn["trades"].copy()
-        trades_df["日期"] = trades_df["日期"].dt.strftime("%Y-%m-%d")
-        st.dataframe(trades_df, width='stretch', hide_index=True)
-
-    # 保存模型
-    save_col1, save_col2 = st.columns([1, 5])
-    with save_col1:
-        if st.button("💾 保存模型", type="primary"):
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            save_path = Path(f"saved_models/rl/{symbol}_{system_version}_{ts}.pt")
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            agent.save(str(save_path), {
-                "symbol": symbol,
-                "system_version": system_version,
-                "train_start": str(train_start),
-                "train_end": str(train_end),
-                "test_return": result_dqn["total_return_pct"],
-                "sharpe": result_dqn["sharpe_ratio"],
-            })
-            st.session_state.rl_agent = agent
-            meta = {"name": save_path.stem, "path": str(save_path),
-                    "symbol": symbol, "system_version": system_version}
-            st.session_state.rl_model_info = meta
-            st.session_state.rl_model_just_saved = True
-            st.success(f"模型已保存: `{save_path.name}`")
-    with save_col2:
-        st.caption("保存当前训练的 DQN 模型到磁盘，之后可在侧边栏加载使用")
-
-    # 实时信号面板（有加载模型时显示）
-    _render_rl_signal(df)
+        # 实时信号面板（有加载模型时显示）
+        _render_rl_signal(df)
 
 # ══════════════════════════════════════════
 #  实时信号面板

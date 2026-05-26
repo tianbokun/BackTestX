@@ -2853,3 +2853,29 @@
 2026-05-26 13:58:36: 2026-05-26 13:58:36.231 Uvicorn server started on 0.0.0.0:8501
 2026-05-26 14:00:19: /home/tianbo/.local/lib/python3.10/site-packages/py_mini_racer/py_mini_racer.py:15: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
 2026-05-26 14:00:19:   import pkg_resources
+2026-05-26 14:04:04: 2026-05-26 14:04:04.258 Uvicorn server started on 0.0.0.0:8501
+2026-05-26 14:04:13: /home/tianbo/.local/lib/python3.10/site-packages/py_mini_racer/py_mini_racer.py:15: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+2026-05-26 14:04:13:   import pkg_resources
+2026-05-26 14:19:55: 2026-05-26 14:19:55.585 Serialization of dataframe to Arrow table was unsuccessful. Applying automatic fixes for column types to make the dataframe Arrow-compatible.
+2026-05-26 14:19:55: Traceback (most recent call last):
+2026-05-26 14:19:55:   File "/home/tianbo/.local/lib/python3.10/site-packages/streamlit/dataframe_util.py", line 961, in convert_pandas_df_to_arrow_bytes
+2026-05-26 14:19:55:     table = pa.Table.from_pandas(df)
+2026-05-26 14:19:55:   File "pyarrow/table.pxi", line 4796, in pyarrow.lib.Table.from_pandas
+2026-05-26 14:19:55:   File "/home/tianbo/.local/lib/python3.10/site-packages/pyarrow/pandas_compat.py", line 651, in dataframe_to_arrays
+2026-05-26 14:19:55:     arrays = [convert_column(c, f)
+2026-05-26 14:19:55:   File "/home/tianbo/.local/lib/python3.10/site-packages/pyarrow/pandas_compat.py", line 651, in <listcomp>
+2026-05-26 14:19:55:     arrays = [convert_column(c, f)
+2026-05-26 14:19:55:   File "/home/tianbo/.local/lib/python3.10/site-packages/pyarrow/pandas_compat.py", line 639, in convert_column
+2026-05-26 14:19:55:     raise e
+2026-05-26 14:19:55:   File "/home/tianbo/.local/lib/python3.10/site-packages/pyarrow/pandas_compat.py", line 633, in convert_column
+2026-05-26 14:19:55:     result = pa.array(col, type=type_, from_pandas=True, safe=safe)
+2026-05-26 14:19:55:   File "pyarrow/array.pxi", line 365, in pyarrow.lib.array
+2026-05-26 14:19:55:   File "pyarrow/array.pxi", line 91, in pyarrow.lib._ndarray_to_array
+2026-05-26 14:19:55:   File "pyarrow/error.pxi", line 92, in pyarrow.lib.check_status
+2026-05-26 14:19:55: pyarrow.lib.ArrowInvalid: ("Could not convert '-' with type str: tried to convert to int64", 'Conversion failed for column 交易次数 with type object')
+2026-05-26 14:28:56: 2026-05-26 14:28:56.820 Uvicorn server started on 0.0.0.0:8501
+2026-05-26 14:31:09: /home/tianbo/.local/lib/python3.10/site-packages/py_mini_racer/py_mini_racer.py:15: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+2026-05-26 14:31:09:   import pkg_resources
+2026-05-26 14:41:16: 2026-05-26 14:41:16.113 Uvicorn server started on 0.0.0.0:8501
+2026-05-26 14:41:49: /home/tianbo/.local/lib/python3.10/site-packages/py_mini_racer/py_mini_racer.py:15: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+2026-05-26 14:41:49:   import pkg_resources

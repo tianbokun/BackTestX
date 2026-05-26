@@ -1,5 +1,7 @@
 import numpy as np
 
+_STANDARD_CAPITAL = 10000.0
+
 
 class StockTradingEnv:
     def __init__(
@@ -18,8 +20,10 @@ class StockTradingEnv:
         self.dates = dates
         self.initial_capital = initial_capital
         self.cr = commission_rate
-        self.min_c = min_commission
         self.sd = stamp_duty
+        # 按资本规模缩放最低佣金, 避免小资金时佣金吞噬全部本金
+        scale = initial_capital / _STANDARD_CAPITAL
+        self.min_c = min_commission * scale
         self.reward_window = reward_window
         self.n_steps = len(close_prices)
 

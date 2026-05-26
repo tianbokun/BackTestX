@@ -1,3 +1,4 @@
+import itertools
 import numpy as np
 import pandas as pd
 import time
@@ -201,6 +202,113 @@ def predict_signal(
     t = len(close) - 1
     state = get_state_vector(indicators, t, system_version, svm_sig, xgb_sig)
     return int(agent.act(state, eval_mode=True))
+
+
+_HPARAM_GRID = {
+    "lr": [1e-6, 5e-6, 1e-5, 5e-5],
+    "gamma": [0.95, 0.98, 0.99],
+    "hidden": [64, 128, 256],
+    "n_episodes": [32, 64, 128],
+    "epsilon_decay": [200, 500, 1000],
+}
+
+
+def hyperparam_search(
+    df: pd.DataFrame,
+    system_version: str = "1.0",
+    commission_rate: float = 0.00025,
+    min_commission: float = 5.0,
+    stamp_duty: float = 0.001,
+    initial_capital: float = 1.0,
+    n_folds: int = 3,
+    progress_callback=None,
+    combo_callback=None,
+    fold_callback=None,
+) -> dict:
+    """超参数网格搜索 + walk-forward 交叉验证.
+
+    combo_callback(combo_idx, total_combos, best_params, best_score)
+        — 每组合所有折完成后调用
+    fold_callback(combo_idx, total_combos, fold_idx, n_folds, params_dict, fold_sharpe)
+        — 每折完成后立即调用
+
+    返回 best_params, best_score, 每折详情, 总耗时.
+    """
+    import time as _time
+    t0 = _time.time()
+
+    close = _close_col(df)
+    n = len(close)
+    fold_size = n // (n_folds + 1)
+    if fold_size < 30:
+        return {"best_params": None, "best_score": -999, "error": f"数据太少 ({n}行), 至少需要 {(n_folds+1)*30} 行"}
+
+    keys, values = zip(*_HPARAM_GRID.items())
+    combos = [dict(zip(keys, v)) for v in itertools.product(*values)]
+    total = len(combos)
+
+    best_score = -999.0
+    best_params = None
+    fold_details = []
+
+    for ci, base_params in enumerate(combos):
+        fold_scores = []
+        for fold in range(n_folds):
+            train_end = (fold + 1) * fold_size
+            val_start = train_end
+            val_end = min(val_start + fold_size, n)
+            if val_end - val_start < 20:
+                continue
+
+            df_fold_train = df.iloc[:train_end]
+            df_fold_val = df.iloc[val_start:val_end]
+
+            params = {
+                **base_params,
+                "commission_rate": commission_rate,
+                "min_commission": min_commission,
+                "stamp_duty": stamp_duty,
+                "initial_capital": initial_capital,
+            }
+            try:
+                agent, _ = train_dqn(df_fold_train, system_version, **params)
+                result = evaluate(agent, df_fold_val, system_version,
+                                  initial_capital=initial_capital,
+                                  commission_rate=commission_rate,
+                                  min_commission=min_commission,
+                                  stamp_duty=stamp_duty)
+                fold_score = float(result["sharpe_ratio"])
+                fold_scores.append(fold_score)
+            except Exception:
+                fold_score = -999.0
+                fold_scores.append(-999)
+
+            if fold_callback:
+                fold_callback(ci, total, fold, n_folds, dict(base_params), fold_score)
+
+        avg_score = float(np.mean(fold_scores)) if fold_scores else -999.0
+        if avg_score > best_score:
+            best_score = avg_score
+            best_params = dict(base_params)
+
+        fold_details.append({
+            "params": dict(base_params),
+            "fold_scores": fold_scores,
+            "avg_score": avg_score,
+        })
+
+        if combo_callback:
+            combo_callback(ci, total, best_params, best_score)
+
+    elapsed = _time.time() - t0
+    return {
+        "best_params": best_params,
+        "best_score": best_score,
+        "total_combos": total,
+        "fold_details": fold_details,
+        "n_folds": n_folds,
+        "elapsed_sec": elapsed,
+    }
 
 
 def compute_signal_history(
