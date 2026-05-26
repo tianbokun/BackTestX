@@ -22,8 +22,11 @@ A股定投回测系统是一个功能全面的 **定投策略回测 Web 应用**
 - **一次性投入对比**：作为基准对照
 - **Walk-Forward 网格搜索**：自动寻找最优参数组合
 - **多策略同图叠加对比**：收益率、持仓市值、累计投入一览无余
+- **🤖 DQN 强化学习交易系统**：RL 交易智能体，支持实时信号、模型持久化、超参搜索
 
 > 数据来源：东方财富 (East Money) → AKShare 接口，支持个股 / ETF / LOF / 开放式基金 / 指数，自动缓存、自动降级、自动跨类型回退。
+
+>> **强化学习**：基于 DQN 的交易智能体，支持 3 种系统版本（basic/1.0/2.0），Walk-Forward 超参搜索，模型持久化，实时交易信号。
 
 ---
 
@@ -54,6 +57,24 @@ A股定投回测系统是一个功能全面的 **定投策略回测 Web 应用**
 - **全局最优 + 每折最优**：展示不同市场环境下的最优参数变化
 - **参数热力图**：RdYlGn 色阶直观展示参数敏感度
 - **结果持久化**：每次搜索自动保存（Parquet + JSON），支持历史结果加载回看
+
+### 🤖 强化学习交易系统
+
+| 特性 | 说明 |
+|------|------|
+| **算法** | DQN (Deep Q-Network) 双网络架构，经验回放 |
+| **状态空间** | 18 维特征向量（价格、均线、布林带、ATR、ADX、CCI、KDJ、RSI、成交量、溢价率） |
+| **动作空间** | 离散 {-1, 0, 1} = {卖出, 持有, 买入}，全仓交易 |
+| **奖励函数** | 滚动窗口组合收益率（10 步），最后一笔使用总收益率 |
+| **交易成本** | 佣金万2.35（最低5元）+ 卖出印花税千1 |
+| **系统版本** | basic（仅价格）、1.0（+技术指标）、2.0（+SVM+XGBoost 涨跌信号） |
+| **超参搜索** | Walk-Forward 3 折 × 5 参数网格（324 组合），以夏普比率选优 |
+| **模型持久化** | PyTorch 模型保存/加载，含元信息（持仓代码、版本、训练日期） |
+| **实时信号** | 页面底部信号面板，显示买入/持有/卖出决策 + 溢价率 |
+
+**训练流程**：历史数据 → 特征工程 → DQN 训练（n 轮 episode）→ 测试集回测 → 与 Buy & Hold 基准对比 → 保存模型
+
+**数据划分**：训练集 / 验证集 / 测试集三段式（默认 33/33/33），验证集用于超参搜索，测试集仅做最终评估。
 
 ### 🛡️ 数据层
 - **5 种资产类型**：个股、ETF、LOF、开放式基金、指数
@@ -115,13 +136,20 @@ pm2 startup
 
 ```
 stock_history_analysis/
-├── app.py                    # Streamlit 主应用（双模式 UI）
+├── app.py                    # Streamlit 主应用（DCA + RL + 网格搜索）
 ├── data_fetcher.py           # 数据获取层（缓存、重试、降级、回退）
 ├── backtest/
 │   ├── dca.py                # 定投回测引擎（6 频率 + XIRR + 一次性投入）
 │   ├── strategies.py         # 智能策略实现（5 种 + 下跌加仓）
 │   ├── grid_search.py        # 网格搜索引擎（Walk-Forward CV + 持久化）
-│   └── strategy_results/     # 网格搜索结果存储目录
+│   ├── strategy_results/     # 网格搜索结果存储目录
+│   └── rl/
+│       ├── environment.py    # 强化学习交易环境（状态/动作/奖励/交易成本）
+│       ├── dqn_agent.py      # DQN 智能体（Q 网络、经验回放、保存/加载）
+│       ├── trainer.py        # 训练引擎 + 超参搜索 + 评估 + 信号预测
+│       ├── feature_engineer.py  # 特征工程（18+ 技术指标 + SVM/XGBoost）
+│       └── metrics.py        # 评估指标（夏普比率、最大回撤）
+├── saved_models/rl/          # RL 模型存储目录（.pt 格式）
 ├── cache/                    # Parquet 数据缓存（30 天过期）
 ├── logs/                     # PM2 运行日志
 ├── requirements.txt          # Python 依赖
@@ -159,6 +187,9 @@ stock_history_analysis/
 | 数据源 | [AKShare](https://github.com/akfamily/akshare) + 东方财富直连 |
 | 图表 | [Plotly](https://plotly.com/python/) (go.Figure + Heatmap) |
 | 数据处理 | Pandas / NumPy |
+| 强化学习 | [PyTorch](https://pytorch.org/) (DQN, 经验回放, 目标网络) |
+| 信号增强 | scikit-learn (LinearSVC) + XGBoost |
+| 技术指标 | 手写实现 (MA/EMA/BB/ATR/ADX/CCI/KDJ/RSI) |
 | 部署 | PM2 / systemd / WSL2 |
 | 缓存格式 | Apache Parquet |
 

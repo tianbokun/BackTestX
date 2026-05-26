@@ -1,7 +1,5 @@
 import numpy as np
 
-_STANDARD_CAPITAL = 10000.0
-
 
 class StockTradingEnv:
     def __init__(
@@ -9,8 +7,8 @@ class StockTradingEnv:
         state_vectors: np.ndarray,
         close_prices: np.ndarray,
         dates: list,
-        initial_capital: float = 1.0,
-        commission_rate: float = 0.00025,
+        initial_capital: float = 100000.0,
+        commission_rate: float = 0.000235,
         min_commission: float = 5.0,
         stamp_duty: float = 0.001,
         reward_window: int = 10,
@@ -21,9 +19,7 @@ class StockTradingEnv:
         self.initial_capital = initial_capital
         self.cr = commission_rate
         self.sd = stamp_duty
-        # 按资本规模缩放最低佣金, 避免小资金时佣金吞噬全部本金
-        scale = initial_capital / _STANDARD_CAPITAL
-        self.min_c = min_commission * scale
+        self.min_c = min_commission
         self.reward_window = reward_window
         self.n_steps = len(close_prices)
 
@@ -48,8 +44,9 @@ class StockTradingEnv:
         price = self.close[self.t]
 
         if action == 1:
-            if self.cash > 0:
-                shares_bought = self.cash / (price * (1 + self.cr))
+            if self.cash > self.min_c:
+                effective_cash = self.cash - self.min_c
+                shares_bought = effective_cash / price
                 cost = shares_bought * price
                 commission = max(cost * self.cr, self.min_c)
                 total = cost + commission

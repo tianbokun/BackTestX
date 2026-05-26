@@ -846,12 +846,15 @@ def _render_rl_training(df_full):
     )
 
     with st.sidebar.expander("💰 费率设置", expanded=False):
-        rl_commission = st.number_input("佣金费率", min_value=0.0, value=0.00025, step=0.00005, format="%.5f",
-                                        key="rl_commission")
+        rl_commission = st.number_input("佣金费率", min_value=0.0, value=0.000235, step=0.000005, format="%.6f",
+                                        key="rl_commission", help="默认万2.35")
         rl_min_commission = st.number_input("最低佣金(元)", min_value=0.0, value=5.0, step=1.0,
-                                            key="rl_min_comm")
+                                            key="rl_min_comm", help="每笔最低5元")
         rl_stamp_duty = st.number_input("印花税率", min_value=0.0, value=0.001, step=0.0001, format="%.4f",
-                                        key="rl_stamp")
+                                        key="rl_stamp", help="仅卖出收取")
+        rl_capital = st.number_input("初始本金(元)", min_value=100.0, value=100000.0, step=10000.0,
+                                     key="rl_capital",
+                                     help="建议>=50000, 否则最低5元佣金占比过高")
 
     with st.sidebar.expander("⚙️ DQN 超参数", expanded=False):
         n_episodes = st.number_input("训练轮数", min_value=10, value=64, step=10)
@@ -906,9 +909,11 @@ def _render_rl_training(df_full):
         st.error(f"测试数据不足 ({len(df_test)} 行)，请扩大测试集")
         st.stop()
 
+    rl_capital_val = float(rl_capital)
     fee_params = dict(commission_rate=float(rl_commission),
                       min_commission=float(rl_min_commission),
-                      stamp_duty=float(rl_stamp_duty))
+                      stamp_duty=float(rl_stamp_duty),
+                      initial_capital=rl_capital_val)
 
     # ── 超参搜索 ──
     if search_btn:
@@ -1021,7 +1026,7 @@ def _render_rl_training(df_full):
                 progress_callback=None, **fee_params,
             )
             val_result = evaluate(best_agent, df_val, system_version=system_version, **fee_params)
-            bh_val = run_bh_baseline(df_val)
+            bh_val = run_bh_baseline(df_val, initial_capital=rl_capital_val)
 
         comp_val = pd.DataFrame([
             {"策略": "DQN", "最终金额": val_result["final_value"],
@@ -1103,7 +1108,7 @@ def _render_rl_training(df_full):
 
         with st.spinner("正在回测..."):
             result_dqn = evaluate(agent, df_test, system_version=system_version, **fee_params)
-            result_bh = run_bh_baseline(df_test)
+            result_bh = run_bh_baseline(df_test, initial_capital=rl_capital_val)
 
         # 指标对比表
         st.markdown("#### 📋 策略指标对比")
