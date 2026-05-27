@@ -51,6 +51,14 @@ if "rl_hp_agent" not in st.session_state:
     st.session_state.rl_hp_agent = None
 if "rl_hp_params" not in st.session_state:
     st.session_state.rl_hp_params = None
+if "rl_trained_agent" not in st.session_state:
+    st.session_state.rl_trained_agent = None
+if "rl_dqn_result" not in st.session_state:
+    st.session_state.rl_dqn_result = None
+if "rl_bh_result" not in st.session_state:
+    st.session_state.rl_bh_result = None
+if "rl_train_meta" not in st.session_state:
+    st.session_state.rl_train_meta = None
 
 # ══════════════════════════════════════════
 #  侧边栏导航 + 公共参数
@@ -822,16 +830,41 @@ def _render_rl_training(df_full):
     df = add_premium_rate(df, symbol, asset_type)
     has_premium = "溢价率" in df.columns
 
+    # 重新拉取全量数据 (RL 需要尽可能多的历史数据)
+    rl_start_str = "20000101"
+    rl_end_str = end_date.strftime("%Y%m%d")
+    df_wide = _cached_fetch(symbol, asset_type, rl_start_str, rl_end_str, adjust)
+    if df_wide is not None and len(df_wide) > len(df):
+        df = df_wide.copy()
+        df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
+        df = ensure_ohlc(df)
+        df = add_premium_rate(df, symbol, asset_type)
+        has_premium = "溢价率" in df.columns
+
+    total_n = len(df)
+    # 自动 60/20/20 分割
+    train_end_i = min(int(total_n * 0.6), total_n - 2)
+    val_end_i = min(int(total_n * 0.8), total_n - 1)
+
+    def _d(i):
+        return pd.Timestamp(str(df.index[min(i, total_n - 1)])).date()
+
+    train_start_def = _d(0)
+    train_end_def = _d(train_end_i)
+    val_start_def = _d(train_end_i + 1) if train_end_i + 1 < total_n else train_end_def
+    val_end_def = _d(val_end_i)
+    test_start_def = _d(val_end_i + 1) if val_end_i + 1 < total_n else val_end_def
+    test_end_def = _d(-1)
+
     # 侧边栏参数
     st.sidebar.markdown("### 🤖 强化学习参数")
 
-    train_start = st.sidebar.date_input("训练集开始", value=df.index[0].date() if len(df) > 0 else date.today())
-    train_end = st.sidebar.date_input("训练集结束", value=df.index[len(df)//3].date() if len(df) > 2 else date.today())
-    val_start = st.sidebar.date_input("验证集开始", value=train_end)
-    val_end = st.sidebar.date_input("验证集结束",
-                                     value=df.index[2*len(df)//3].date() if len(df) > 2 else date.today())
-    test_start = st.sidebar.date_input("测试集开始", value=val_end)
-    test_end = st.sidebar.date_input("测试集结束", value=df.index[-1].date())
+    train_start = st.sidebar.date_input("训练集开始", value=train_start_def)
+    train_end = st.sidebar.date_input("训练集结束", value=train_end_def)
+    val_start = st.sidebar.date_input("验证集开始", value=val_start_def)
+    val_end = st.sidebar.date_input("验证集结束", value=val_end_def)
+    test_start = st.sidebar.date_input("测试集开始", value=test_start_def)
+    test_end = st.sidebar.date_input("测试集结束", value=test_end_def)
 
     system_version = st.sidebar.selectbox(
         "系统版本",
@@ -885,17 +918,32 @@ def _render_rl_training(df_full):
             st.session_state.rl_agent = loaded
             meta = torch.load(selected_path, map_location="cpu", weights_only=False).get("metadata", {})
             st.session_state.rl_model_info = {"path": selected_path, "name": selected_name, **meta}
+            st.session_state.rl_model_just_saved = False
             st.rerun()
         if col_s2.button("🗑 删除", width='stretch', key="rl_del_btn"):
             (model_dir / f"{selected_name}.pt").unlink()
             if st.session_state.rl_model_info and st.session_state.rl_model_info.get("name") == selected_name:
                 st.session_state.rl_agent = None
                 st.session_state.rl_model_info = None
+            st.session_state.rl_model_just_saved = False
             st.rerun()
-    elif st.session_state.rl_model_just_saved:
-        st.sidebar.success("✅ 模型已保存！刷新页面后显示在列表中")
+
+        with st.sidebar.expander("✏️ 重命名", expanded=False):
+            rename_to = st.text_input("新名称", value=selected_name, key="rl_rename_input")
+            if st.button("确认重命名", key="rl_rename_btn"):
+                if rename_to and rename_to != selected_name:
+                    old_p = model_dir / f"{selected_name}.pt"
+                    new_p = model_dir / f"{rename_to}.pt"
+                    if not new_p.exists():
+                        old_p.rename(new_p)
+                        st.rerun()
+                    else:
+                        st.error("文件名已存在")
     else:
-        st.sidebar.caption("暂无已保存的模型")
+        if st.session_state.rl_model_just_saved:
+            st.sidebar.success("✅ 模型已保存！刷新页面后显示在列表中")
+        else:
+            st.sidebar.caption("暂无已保存的模型")
 
     # ── 划分数据集 ──
     df_train = df[(df.index >= pd.Timestamp(train_start)) & (df.index <= pd.Timestamp(train_end))].copy()
@@ -908,6 +956,12 @@ def _render_rl_training(df_full):
     if len(df_test) < 20:
         st.error(f"测试数据不足 ({len(df_test)} 行)，请扩大测试集")
         st.stop()
+
+    st.info(
+        f"训练集: {str(train_start)[:10]} ~ {str(train_end)[:10]} ({len(df_train)} 行) | "
+        f"验证集: {str(val_start)[:10]} ~ {str(val_end)[:10]} ({len(df_val)} 行) | "
+        f"测试集: {str(test_start)[:10]} ~ {str(test_end)[:10]} ({len(df_test)} 行)"
+    )
 
     rl_capital_val = float(rl_capital)
     fee_params = dict(commission_rate=float(rl_commission),
@@ -922,7 +976,7 @@ def _render_rl_training(df_full):
             st.stop()
         df_hp = pd.concat([df_train, df_val]).sort_index()
         total_days = len(df_hp)
-        st.info(f"超参搜索窗口: {df_hp.index[0].date()} ~ {df_hp.index[-1].date()} ({total_days} 行)")
+        st.info(f"超参搜索窗口: {str(df_hp.index[0])[:10]} ~ {str(df_hp.index[-1])[:10]} ({total_days} 行)")
 
         hp_header = st.empty()
         hp_header.info(f"⏳ 超参搜索: 324 组合 × 3 折 = 972 次训练, 请耐心等待...")
@@ -1034,7 +1088,7 @@ def _render_rl_training(df_full):
              "最大回撤%": val_result["max_drawdown_pct"], "交易次数": val_result["num_trades"]},
             {"策略": "买入持有(BH)", "最终金额": bh_val["final_value"],
              "收益率%": bh_val["total_return_pct"], "夏普比率": bh_val["sharpe_ratio"],
-             "最大回撤%": bh_val["max_drawdown_pct"], "交易次数": "-"},
+             "最大回撤%": bh_val["max_drawdown_pct"], "交易次数": 0},
         ])
         st.dataframe(comp_val, width='stretch', hide_index=True)
 
@@ -1048,17 +1102,42 @@ def _render_rl_training(df_full):
         st.session_state.rl_hp_params = bp
         st.session_state.rl_hp_score = bs
 
-    # ── 训练 ──
-    if not run_btn and not search_btn:
-        st.info("👈 在侧边栏设置好参数后，点击「开始训练」或「超参搜索」")
-        _render_rl_signal(df)
-        st.stop()
+    # ── 保存超参搜索结果 (在 search_btn 块外, 确保持久化) ──
+    if st.session_state.rl_hp_agent is not None:
+        st.markdown("---")
+        st.subheader("💾 保存超参搜索模型")
+        sym = symbol
+        sv = system_version
+        _hp_save_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        _hp_save_default = f"{sym}_hp_{sv}_{_hp_save_ts}"
+        _hp_save_name = st.text_input("模型名称", value=_hp_save_default, key="rl_hp_save_name")
+        save_col1, save_col2 = st.columns([1, 5])
+        with save_col1:
+            if st.button("💾 保存模型", type="primary", key="rl_save_hp_model_btn"):
+                save_path = Path(f"saved_models/rl/{_hp_save_name}.pt")
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+                st.session_state.rl_hp_agent.save(str(save_path), {
+                    "symbol": sym, "system_version": sv,
+                    "train_start": str(train_start),
+                    "train_end": str(train_end),
+                    "source": "hyperparam_search",
+                    "sharpe": st.session_state.rl_hp_score,
+                })
+                st.session_state.rl_agent = st.session_state.rl_hp_agent
+                st.session_state.rl_model_info = {
+                    "name": save_path.stem, "path": str(save_path),
+                    "symbol": sym, "system_version": sv,
+                }
+                st.session_state.rl_model_just_saved = True
+                st.rerun()
+        with save_col2:
+            st.caption("保存超参搜索得到的最优模型到磁盘，之后可在侧边栏加载使用")
 
+    # ── 训练 ──
     if run_btn:
         st.markdown("---")
         st.subheader("📊 训练与测试")
 
-        # 训练进度
         progress_bar = st.progress(0)
         loss_chart = st.empty()
         loss_data = []
@@ -1078,15 +1157,10 @@ def _render_rl_training(df_full):
 
         try:
             params = {
-                "n_episodes": int(n_episodes),
-                "batch_size": int(batch_size),
-                "lr": float(lr),
-                "gamma": float(gamma),
-                "hidden": int(hidden),
-                "epsilon_start": float(epsilon_start),
-                "epsilon_end": float(epsilon_end),
-                "epsilon_decay": int(epsilon_decay),
-                "target_update": int(target_update),
+                "n_episodes": int(n_episodes), "batch_size": int(batch_size),
+                "lr": float(lr), "gamma": float(gamma), "hidden": int(hidden),
+                "epsilon_start": float(epsilon_start), "epsilon_end": float(epsilon_end),
+                "epsilon_decay": int(epsilon_decay), "target_update": int(target_update),
                 "buffer_capacity": int(buffer_capacity),
             }
         except ValueError:
@@ -1096,21 +1170,35 @@ def _render_rl_training(df_full):
         with st.spinner("正在训练 DQN 智能体..."):
             agent, _ = train_dqn(
                 df_train, system_version=system_version,
-                progress_callback=_progress,
-                **params, **fee_params,
+                progress_callback=_progress, **params, **fee_params,
             )
-
-        st.success("✅ 训练完成！")
-
-        # 测试集评估
-        st.markdown("---")
-        st.subheader("📊 测试集回测结果")
 
         with st.spinner("正在回测..."):
             result_dqn = evaluate(agent, df_test, system_version=system_version, **fee_params)
             result_bh = run_bh_baseline(df_test, initial_capital=rl_capital_val)
 
-        # 指标对比表
+        # 存入 session_state 持久化
+        st.session_state.rl_trained_agent = agent
+        st.session_state.rl_dqn_result = result_dqn
+        st.session_state.rl_bh_result = result_bh
+        st.session_state.rl_train_meta = {
+            "symbol": symbol, "system_version": system_version,
+            "train_start": str(train_start), "train_end": str(train_end),
+            "df_test_index": df_test.index,
+        }
+        st.session_state.rl_model_just_saved = True
+        st.success("✅ 训练完成！")
+
+    # ── 展示训练结果 + 保存按钮 (在 run_btn 外部, 持久化) ──
+    if st.session_state.rl_trained_agent is not None:
+        agent = st.session_state.rl_trained_agent
+        result_dqn = st.session_state.rl_dqn_result
+        result_bh = st.session_state.rl_bh_result
+        meta_info = st.session_state.rl_train_meta
+
+        st.markdown("---")
+        st.subheader("📊 测试集回测结果")
+
         st.markdown("#### 📋 策略指标对比")
         comp = pd.DataFrame([
             {"策略": "DQN", "最终金额": result_dqn["final_value"],
@@ -1122,66 +1210,72 @@ def _render_rl_training(df_full):
              "收益率%": result_bh["total_return_pct"],
              "夏普比率": result_bh["sharpe_ratio"],
              "最大回撤%": result_bh["max_drawdown_pct"],
-             "交易次数": "-"},
+             "交易次数": 0},
         ])
         st.dataframe(comp, width='stretch', hide_index=True)
 
-        # 累计利润图
         st.markdown("#### 📈 累计利润对比")
         import plotly.graph_objects as go
+        test_idx = meta_info.get("df_test_index", result_dqn.get("dates"))
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=df_test.index, y=result_dqn["equity_curve"],
-            mode="lines", name=f"DQN ({system_version})",
+            x=test_idx, y=result_dqn["equity_curve"],
+            mode="lines", name=f"DQN ({meta_info['system_version']})",
             line=dict(color="#1f77b4", width=2),
         ))
         fig.add_trace(go.Scatter(
-            x=df_test.index, y=result_bh["equity_curve"],
+            x=test_idx, y=result_bh["equity_curve"],
             mode="lines", name="买入持有(BH)",
             line=dict(color="#ff7f0e", width=2, dash="dash"),
         ))
-        fig.add_hline(y=1.0, line_dash="dot", line_color="gray", annotation_text="初始本金")
+        fig.add_hline(y=rl_capital_val, line_dash="dot", line_color="gray", annotation_text="初始本金")
         fig.update_layout(
-            xaxis_title="日期", yaxis_title="账户总值 (初始=1.0)",
+            xaxis_title="日期", yaxis_title=f"账户总值 (初始={rl_capital_val:,.0f})",
             hovermode="x unified", height=400,
             margin=dict(l=10, r=10, t=10, b=10),
             legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
         )
         st.plotly_chart(fig, width='stretch')
 
-        # 交易记录
         if not result_dqn["trades"].empty:
             st.markdown("#### 📝 交易记录")
             trades_df = result_dqn["trades"].copy()
             trades_df["日期"] = trades_df["日期"].dt.strftime("%Y-%m-%d")
             st.dataframe(trades_df, width='stretch', hide_index=True)
 
-        # 保存模型
+        sv = meta_info["system_version"]
+        sym = meta_info["symbol"]
+        _train_save_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        _train_save_default = f"{sym}_{sv}_{_train_save_ts}"
+        _train_save_name = st.text_input("模型名称", value=_train_save_default, key="rl_train_save_name")
         save_col1, save_col2 = st.columns([1, 5])
         with save_col1:
-            if st.button("💾 保存模型", type="primary"):
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                save_path = Path(f"saved_models/rl/{symbol}_{system_version}_{ts}.pt")
+            if st.button("💾 保存模型", type="primary", key="rl_save_model_btn"):
+                save_path = Path(f"saved_models/rl/{_train_save_name}.pt")
                 save_path.parent.mkdir(parents=True, exist_ok=True)
                 agent.save(str(save_path), {
-                    "symbol": symbol,
-                    "system_version": system_version,
-                    "train_start": str(train_start),
-                    "train_end": str(train_end),
+                    "symbol": sym, "system_version": sv,
+                    "train_start": meta_info["train_start"],
+                    "train_end": meta_info["train_end"],
                     "test_return": result_dqn["total_return_pct"],
                     "sharpe": result_dqn["sharpe_ratio"],
                 })
                 st.session_state.rl_agent = agent
-                meta = {"name": save_path.stem, "path": str(save_path),
-                        "symbol": symbol, "system_version": system_version}
-                st.session_state.rl_model_info = meta
+                st.session_state.rl_model_info = {
+                    "name": save_path.stem, "path": str(save_path),
+                    "symbol": sym, "system_version": sv,
+                }
                 st.session_state.rl_model_just_saved = True
-                st.success(f"模型已保存: `{save_path.name}`")
+                st.rerun()
         with save_col2:
             st.caption("保存当前训练的 DQN 模型到磁盘，之后可在侧边栏加载使用")
 
-        # 实时信号面板（有加载模型时显示）
-        _render_rl_signal(df)
+    else:
+        if not run_btn and not search_btn:
+            st.info("👈 在侧边栏设置好参数后，点击「开始训练」或「超参搜索」")
+
+    # 实时信号面板（有加载模型时显示）
+    _render_rl_signal(df)
 
 # ══════════════════════════════════════════
 #  实时信号面板
@@ -1205,7 +1299,7 @@ def _render_rl_signal(df_full):
         ver = info.get("system_version", "1.0")
         st.metric("系统版本", {"basic": "基础版", "1.0": "系统1.0", "2.0": "系统2.0"}.get(ver, ver))
     with meta_cols[3]:
-        st.metric("最新日期", str(df_full.index[-1].date()) if len(df_full) > 0 else "-")
+        st.metric("最新日期", str(df_full.index[-1])[:10] if len(df_full) > 0 else "-")
 
     rename_map = {"开盘": "开盘价", "收盘": "收盘价", "最高": "最高价", "最低": "最低价"}
     df = df_full.copy()
@@ -1218,14 +1312,14 @@ def _render_rl_signal(df_full):
     with st.spinner("正在计算信号..."):
         sig = predict_signal(agent, df, system_version=ver)
 
-    action_map = {-1: ("🔴 卖出", "#ef4444"), 0: ("⚪ 持有", "#6b7280"), 1: ("🟢 买入", "#22c55e")}
+    action_map = {-1: ("🔴 卖出", "#ef4444"), 0: ("⚪ 持有", "#6b7280"), 1: ("🟢 买入", "#22c55e"), 2: ("🔴 卖出", "#ef4444")}
     label, color = action_map.get(sig, ("❓ 未知", "#888888"))
     st.markdown(
         f"<div style='text-align:center; padding:24px; background:{color}22; "
         f"border-radius:12px; border:2px solid {color}'>"
         f"<span style='font-size:48px; font-weight:bold; color:{color}'>{label}</span>"
         f"<br><span style='font-size:16px; color:{color}99'>"
-        f"基于 {df.index[-1].date()} 日数据</span></div>",
+        f"基于 {str(df.index[-1])[:10]} 日数据</span></div>",
         unsafe_allow_html=True,
     )
 

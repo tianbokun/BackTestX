@@ -119,6 +119,30 @@ def compute_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def normalize_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.ffill().fillna(0)
+    result = pd.DataFrame(index=df.index)
+    for col in df.columns:
+        s = df[col].values.astype(np.float64)
+        n = len(s)
+        norm = np.zeros(n, dtype=np.float32)
+        cumsum = 0.0
+        cumsum_sq = 0.0
+        for t in range(n):
+            cumsum += s[t]
+            cumsum_sq += s[t] * s[t]
+            count = t + 1
+            mean = cumsum / count
+            var = max(cumsum_sq / count - mean * mean, 1e-16)
+            std = np.sqrt(var)
+            if std < 1e-8:
+                norm[t] = 0.0
+            else:
+                norm[t] = np.clip((s[t] - mean) / std, -5.0, 5.0)
+        result[col] = norm
+    return result
+
+
 def get_state_vector(
     df_indicators: pd.DataFrame,
     t: int,

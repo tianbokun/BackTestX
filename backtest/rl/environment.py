@@ -23,6 +23,7 @@ class StockTradingEnv:
         self.reward_window = reward_window
         self.n_steps = len(close_prices)
 
+        self._last_trade_cost = 0.0
         self.reset()
 
     def reset(self):
@@ -31,6 +32,7 @@ class StockTradingEnv:
         self.shares = 0.0
         self.portfolio_values = []
         self.actions_taken = []
+        self._last_trade_cost = 0.0
         self.done = False
         return self._get_state()
 
@@ -42,33 +44,42 @@ class StockTradingEnv:
 
     def step(self, action: int):
         price = self.close[self.t]
+        self._last_trade_cost = 0.0
 
         if action == 1:
             if self.cash > self.min_c:
-                effective_cash = self.cash - self.min_c
-                shares_bought = effective_cash / price
-                cost = shares_bought * price
-                commission = max(cost * self.cr, self.min_c)
+                max_cost = self.cash / (1 + self.cr)
+                commission = max_cost * self.cr
+                if commission < self.min_c:
+                    cost = self.cash - self.min_c
+                    commission = self.min_c
+                else:
+                    cost = max_cost
+                shares_bought = cost / price
                 total = cost + commission
                 if total <= self.cash and cost > 0:
                     self.cash -= total
                     self.shares += shares_bought
-        elif action == -1:
+                    self._last_trade_cost = commission
+        elif action == -1 or action == 2:
             if self.shares > 0:
                 proceeds = self.shares * price
                 commission = max(proceeds * self.cr, self.min_c)
                 tax = proceeds * self.sd
                 self.cash += proceeds - commission - tax
                 self.shares = 0.0
+                self._last_trade_cost = commission + tax
 
-        self.t += 1
         pv = self._portfolio_value()
         self.portfolio_values.append(pv)
         self.actions_taken.append(action)
 
+        self.t += 1
+
         if self.t >= self.n_steps - 1:
             self.done = True
-            reward = (pv - self.initial_capital) / self.initial_capital * 100
+            reward = (pv - self.initial_capital) / self.initial_capital
+            reward -= self._last_trade_cost / self.initial_capital
             return self._get_state(), reward, self.done
 
         reward = self._calc_reward()
@@ -80,4 +91,6 @@ class StockTradingEnv:
             return 0.0
         pv_now = self.portfolio_values[-1]
         pv_start = self.portfolio_values[-n] if n <= len(self.portfolio_values) else self.initial_capital
-        return float((pv_now - pv_start) / max(pv_start, 1e-9))
+        base_reward = float((pv_now - pv_start) / max(pv_start, 1e-9))
+        cost_penalty = self._last_trade_cost / self.initial_capital
+        return base_reward - cost_penalty

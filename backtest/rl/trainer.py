@@ -7,6 +7,7 @@ from .environment import StockTradingEnv
 from .dqn_agent import DQNAgent
 from .feature_engineer import (
     compute_technical_indicators,
+    normalize_indicators,
     get_state_vector,
     get_state_dim,
     compute_svm_xgb_signals,
@@ -42,6 +43,7 @@ def train_dqn(
 ) -> tuple:
     close = _close_col(df_train)
     indicators = compute_technical_indicators(df_train)
+    indicators = normalize_indicators(indicators)
 
     svm_sig, xgb_sig = None, None
     if system_version == "2.0":
@@ -104,6 +106,7 @@ def evaluate(
 ) -> dict:
     close = _close_col(df_test)
     indicators = compute_technical_indicators(df_test)
+    indicators = normalize_indicators(indicators)
 
     svm_sig, xgb_sig = None, None
     if system_version == "2.0":
@@ -196,6 +199,7 @@ def predict_signal(
 ) -> int:
     close = _close_col(df)
     indicators = compute_technical_indicators(df)
+    indicators = normalize_indicators(indicators)
     svm_sig, xgb_sig = None, None
     if system_version == "2.0":
         svm_sig, xgb_sig = compute_svm_xgb_signals(df)
@@ -318,6 +322,7 @@ def compute_signal_history(
 ) -> list:
     close = _close_col(df)
     indicators = compute_technical_indicators(df)
+    indicators = normalize_indicators(indicators)
     svm_sig, xgb_sig = None, None
     if system_version == "2.0":
         svm_sig, xgb_sig = compute_svm_xgb_signals(df)
