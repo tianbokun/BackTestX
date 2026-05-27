@@ -5,6 +5,7 @@ Streamlit Web UI
 """
 
 import sys
+import threading
 from pathlib import Path
 from datetime import datetime, date
 
@@ -34,6 +35,11 @@ from backtest.rl.feature_engineer import FEATURE_GROUPS, DEFAULT_FEATURE_GROUPS
 from backtest.grid_search import (
     run_grid_search, save_result, list_saved_results, load_result,
 )
+
+# ── Threading globals for cancelable HP search ──
+_hp_cancel_event = threading.Event()
+_hp_output: dict = {}
+_hp_progress: dict = {}
 
 st.set_page_config(
     page_title="A股定投回测系统",
@@ -998,132 +1004,170 @@ def _render_rl_training(df_full):
         total_days = len(df_hp)
         st.info(f"超参搜索窗口: {str(df_hp.index[0])[:10]} ~ {str(df_hp.index[-1])[:10]} ({total_days} 行)")
 
-        hp_header = st.empty()
-        hp_header.info(f"⏳ 超参搜索: 324 组合 × 3 折 = 972 次训练, 请耐心等待...")
+        # Reset threading globals
+        _hp_cancel_event.clear()
+        _hp_output.clear()
+        _hp_progress.clear()
+        _hp_progress["_status"] = "running"
 
-        progress_bar = st.progress(0)
-        fold_bar = st.progress(0)
-        detail_box = st.empty()
-        log_box = st.empty()
+        sv = system_version
+        fg = list(selected_groups)
+        fp = dict(fee_params)
 
-        from collections import deque
-        import time
-        _hp_start = time.time()
-        _hp_recent = deque(maxlen=5)
+        import time as _time_mod
+        _hp_start = _time_mod.time()
 
         def _hp_fold_callback(ci, total, fi, nf, params, fold_sharpe):
-            elapsed = time.time() - _hp_start
-            total_folds = total * nf
-            folds_done = ci * nf + fi + 1
-            pct = folds_done / total_folds * 100
+            _hp_progress["combo_idx"] = ci
+            _hp_progress["total_combos"] = total
+            _hp_progress["fold_idx"] = fi
+            _hp_progress["n_folds"] = nf
+            _hp_progress["params"] = params
+            _hp_progress["fold_sharpe"] = fold_sharpe
+            _hp_progress["elapsed"] = _time_mod.time() - _hp_start
 
-            progress_bar.progress(folds_done / total_folds)
-            fold_bar.progress((fi + 1) / nf)
-
-            avg_time = elapsed / folds_done
-            remaining = avg_time * (total_folds - folds_done)
-            remaining_str = f"{remaining/60:.0f} 分" if remaining < 3600 else f"{remaining/3600:.1f} 时"
-
-            p_str = ", ".join(f"{k}={v}" for k, v in sorted(params.items()))
-            sign = "+" if fold_sharpe >= 0 else ""
-            detail_box.code(
-                f"组合 {ci+1}/{total} | 折 {fi+1}/{nf}\n"
-                f"参数: {p_str}\n"
-                f"本折夏普: {sign}{fold_sharpe:.4f}\n"
-                f"已用: {elapsed/60:.1f} 分 | 预计剩余: ~{remaining_str}\n"
-                f"总体: {folds_done}/{total_folds} 训练 ({pct:.2f}%)"
-            )
+        from collections import deque as _deque
+        _hp_recent = _deque(maxlen=5)
 
         def _hp_combo_callback(ci, total, best_params, best_score):
-            nf = 3
-            folds_done = (ci + 1) * nf
-            total_folds = total * nf
-            pct = folds_done / total_folds * 100
-
-            fold_bar.progress(0)
-            elapsed = time.time() - _hp_start
-
-            hp_header.info(
-                f"⏳ 搜索中: {folds_done}/{total_folds} ({pct:.2f}%) | "
-                f"已用 {elapsed/60:.1f} 分 | "
-                f"当前最优: 夏普={best_score:.4f}"
-            )
-
+            _hp_progress["combo_idx"] = ci
+            _hp_progress["total_combos"] = total
+            _hp_progress["best_params"] = best_params
+            _hp_progress["best_score"] = best_score
+            _hp_progress["elapsed"] = _time_mod.time() - _hp_start
             if best_params and best_score > -999:
                 _hp_recent.append((ci, best_score))
+            _hp_progress["recent"] = list(_hp_recent)
 
-            # 最近 5 个 combo 的得分日志
+        def _run_hp():
+            try:
+                result = hyperparam_search(
+                    df_hp, system_version=sv,
+                    feature_groups=fg,
+                    progress_callback=None,
+                    combo_callback=_hp_combo_callback,
+                    fold_callback=_hp_fold_callback,
+                    cancel_check=_hp_cancel_event.is_set,
+                    **fp,
+                )
+                _hp_output["_done"] = True
+                _hp_output.update(result)
+            except Exception as e:
+                _hp_output["_done"] = True
+                _hp_output["_error"] = str(e)
+
+        _hp_thread = threading.Thread(target=_run_hp, daemon=True)
+        _hp_thread.start()
+        st.session_state.hp_running = True
+        st.rerun()
+
+    # ── HP 搜索进度轮询 ──
+    if st.session_state.get("hp_running", False):
+        nf = 3
+        total_combos = 324
+        total_folds = total_combos * nf
+        ci = _hp_progress.get("combo_idx", 0)
+        fi = _hp_progress.get("fold_idx", 0)
+        folds_done = ci * nf + min(fi + 1, nf)
+        elapsed = _hp_progress.get("elapsed", 0.0)
+
+        pct = min(folds_done / max(total_folds, 1), 1.0)
+        st.progress(pct, text=f"超参搜索: {folds_done}/{total_folds} 训练 ({pct*100:.1f}%)")
+
+        stop_col1, stop_col2 = st.columns([1, 5])
+        with stop_col1:
+            if st.button("⏹ 停止搜索", key="hp_stop_btn"):
+                _hp_cancel_event.set()
+                st.info("⏳ 正在等待当前组合完成后停止...")
+                st.rerun()
+        with stop_col2:
+            if _hp_cancel_event.is_set():
+                st.warning("停止中 (当前组合完成后停止)")
+
+        best_score = _hp_progress.get("best_score", -999.0)
+        best_params = _hp_progress.get("best_params")
+        if best_params:
+            p_str = ", ".join(f"{k}={v}" for k, v in sorted(best_params.items()))
+            st.code(f"🏆 当前最优: 夏普={best_score:.4f}\n  参数: {p_str}")
+
+        recent = _hp_progress.get("recent", [])
+        if recent:
             log_lines = ["最近 5 个最优得分 (更新时):"]
-            for idx, sc in _hp_recent:
+            for idx, sc in recent:
                 log_lines.append(f"  #{idx+1:>3d}  夏普={sc:+.4f}")
-            log_lines.append(f"  🏆 当前最优: 夏普={best_score:.4f}")
-            log_box.code("\n".join(log_lines))
+            st.code("\n".join(log_lines))
 
-        try:
-            hp_result = hyperparam_search(
-                df_hp, system_version=system_version,
-                feature_groups=selected_groups,
-                progress_callback=None,
-                combo_callback=_hp_combo_callback,
-                fold_callback=_hp_fold_callback,
-                **fee_params,
-            )
-        except Exception as e:
-            st.error(f"超参搜索失败: {e}")
-            st.stop()
+        avg_time = elapsed / max(folds_done, 1)
+        remaining = avg_time * (total_folds - folds_done)
+        remaining_str = f"{remaining/60:.0f} 分" if remaining < 3600 else f"{remaining/3600:.1f} 时"
+        st.caption(f"已用 {elapsed/60:.1f} 分 | 预计剩余: ~{remaining_str}")
 
-        progress_bar.empty()
-        fold_bar.empty()
-        detail_box.empty()
-        log_box.empty()
-        hp_header.empty()
+        done = _hp_output.get("_done", False)
+        error = _hp_output.get("_error")
 
-        bp = hp_result.get("best_params")
-        bs = hp_result.get("best_score", -999)
+        if error:
+            st.error(f"超参搜索失败: {error}")
+            st.session_state.hp_running = False
+            st.rerun()
 
-        if bp is None:
-            st.error(hp_result.get("error", "搜索失败"))
-            st.stop()
+        if done:
+            hp_result = {k: v for k, v in _hp_output.items() if k not in ("_done", "_error")}
+            st.session_state.hp_running = False
 
-        elapsed_total = hp_result.get("elapsed_sec", 0)
-        st.success(f"✅ 搜索完成! 耗时 {elapsed_total/60:.1f} 分 | "
-                   f"最优: lr={bp['lr']}, gamma={bp['gamma']}, "
-                   f"hidden={bp['hidden']}, n_episodes={bp['n_episodes']}, "
-                   f"epsilon_decay={bp['epsilon_decay']}  |  验证夏普={bs:.4f}")
+            bp = hp_result.get("best_params")
+            bs = hp_result.get("best_score", -999)
 
-        # 用最优参数在训练集上训练, 在验证集上评估
-        st.markdown("### 📊 验证集回测结果 (最优参数)")
-        with st.spinner("正在训练/回测..."):
-            best_agent, _ = train_dqn(
-                df_train, system_version=system_version,
-                feature_groups=selected_groups,
-                n_episodes=bp["n_episodes"], lr=bp["lr"], gamma=bp["gamma"],
-                hidden=bp["hidden"], epsilon_decay=bp["epsilon_decay"],
-                progress_callback=None, **fee_params,
-            )
-            val_result = evaluate(best_agent, df_val, system_version=system_version,
-                                  feature_groups=selected_groups, **fee_params)
-            bh_val = run_bh_baseline(df_val, initial_capital=rl_capital_val)
+            if bp is None:
+                if _hp_cancel_event.is_set():
+                    st.warning("搜索被用户手动停止，显示部分结果")
+                else:
+                    st.error(hp_result.get("error", "搜索失败"))
+                st.stop()
 
-        comp_val = pd.DataFrame([
-            {"策略": "DQN", "最终金额": val_result["final_value"],
-             "收益率%": val_result["total_return_pct"], "夏普比率": val_result["sharpe_ratio"],
-             "最大回撤%": val_result["max_drawdown_pct"], "交易次数": val_result["num_trades"]},
-            {"策略": "买入持有(BH)", "最终金额": bh_val["final_value"],
-             "收益率%": bh_val["total_return_pct"], "夏普比率": bh_val["sharpe_ratio"],
-             "最大回撤%": bh_val["max_drawdown_pct"], "交易次数": 0},
-        ])
-        st.dataframe(comp_val, width='stretch', hide_index=True)
+            elapsed_total = hp_result.get("elapsed_sec", 0)
+            st.success(f"✅ 搜索完成! 耗时 {elapsed_total/60:.1f} 分 | "
+                       f"最优: lr={bp['lr']}, gamma={bp['gamma']}, "
+                       f"hidden={bp['hidden']}, n_episodes={bp['n_episodes']}, "
+                       f"epsilon_decay={bp['epsilon_decay']}  |  验证夏普={bs:.4f}")
 
-        if not val_result["trades"].empty:
-            with st.expander("📝 交易记录"):
-                td = val_result["trades"].copy()
-                td["日期"] = td["日期"].dt.strftime("%Y-%m-%d")
-                st.dataframe(td, width='stretch', hide_index=True)
+            st.markdown("### 📊 验证集回测结果 (最优参数)")
+            with st.spinner("正在训练/回测..."):
+                best_agent, _ = train_dqn(
+                    df_train, system_version=system_version,
+                    feature_groups=selected_groups,
+                    n_episodes=bp["n_episodes"], lr=bp["lr"], gamma=bp["gamma"],
+                    hidden=bp["hidden"], epsilon_decay=bp["epsilon_decay"],
+                    progress_callback=None, **fee_params,
+                )
+                val_result = evaluate(best_agent, df_val, system_version=system_version,
+                                      feature_groups=selected_groups, **fee_params)
+                bh_val = run_bh_baseline(df_val, initial_capital=rl_capital_val)
 
-        st.session_state.rl_hp_agent = best_agent
-        st.session_state.rl_hp_params = bp
-        st.session_state.rl_hp_score = bs
+            comp_val = pd.DataFrame([
+                {"策略": "DQN", "最终金额": val_result["final_value"],
+                 "收益率%": val_result["total_return_pct"], "夏普比率": val_result["sharpe_ratio"],
+                 "最大回撤%": val_result["max_drawdown_pct"], "交易次数": val_result["num_trades"]},
+                {"策略": "买入持有(BH)", "最终金额": bh_val["final_value"],
+                 "收益率%": bh_val["total_return_pct"], "夏普比率": bh_val["sharpe_ratio"],
+                 "最大回撤%": bh_val["max_drawdown_pct"], "交易次数": 0},
+            ])
+            st.dataframe(comp_val, width='stretch', hide_index=True)
+
+            if not val_result["trades"].empty:
+                with st.expander("📝 交易记录"):
+                    td = val_result["trades"].copy()
+                    td["日期"] = td["日期"].dt.strftime("%Y-%m-%d")
+                    st.dataframe(td, width='stretch', hide_index=True)
+
+            st.session_state.rl_hp_agent = best_agent
+            st.session_state.rl_hp_params = bp
+            st.session_state.rl_hp_score = bs
+            st.rerun()
+
+        else:
+            import time
+            time.sleep(1)
+            st.rerun()
 
     # ── 保存超参搜索结果 (在 search_btn 块外, 确保持久化) ──
     if st.session_state.rl_hp_agent is not None:

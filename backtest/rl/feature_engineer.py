@@ -10,7 +10,7 @@ except ImportError:
 FEATURE_GROUPS = {
     "trend": {
         "label": "趋势指标 (MACD+ADX/DI±)",
-        "columns": ["MACD_DIF", "MACD_DEA", "MACD_HIST", "ADX", "DI_PLUS", "DI_MINUS"],
+        "columns": ["MACD_DIF", "MACD_DEA", "MACD_HIST", "ADX_raw", "DI_PLUS", "DI_MINUS"],
         "raw_columns": [],
         "default": True,
         "help": "MACD 三线 + ADX 方向分量",
@@ -223,6 +223,11 @@ def compute_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── Volume ──
     out["OBV"] = _obv(close, volume)
+
+    # ── Raw passthrough ──
+    for col in ["成交额"]:
+        if col in ohclv.columns:
+            out[col] = ohclv[col].values.astype(float)
 
     # ── Premium rate (ETF/LOF only) ──
     if "溢价率" in ohclv.columns:

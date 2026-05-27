@@ -152,16 +152,24 @@ def evaluate(
     mdd = max_drawdown(pv)
 
     trades = []
-    prev_action = 0
+    in_position = False
     for i, a in enumerate(actions):
-        if a != prev_action and a != 0:
+        if a == 1 and not in_position:
             trades.append({
                 "日期": df_test.index[i],
-                "动作": "买入" if a == 1 else "卖出",
+                "动作": "买入",
                 "价格": round(float(close[i]), 4),
                 "持仓市值": round(float(pv[i]), 4),
             })
-        prev_action = a
+            in_position = True
+        elif a in (-1, 2) and in_position:
+            trades.append({
+                "日期": df_test.index[i],
+                "动作": "卖出",
+                "价格": round(float(close[i]), 4),
+                "持仓市值": round(float(pv[i]), 4),
+            })
+            in_position = False
 
     return {
         "final_value": round(final_value, 4),
@@ -243,6 +251,7 @@ def hyperparam_search(
     progress_callback=None,
     combo_callback=None,
     fold_callback=None,
+    cancel_check: callable = None,
 ) -> dict:
     """超参数网格搜索 + walk-forward 交叉验证.
 
@@ -271,6 +280,8 @@ def hyperparam_search(
     fold_details = []
 
     for ci, base_params in enumerate(combos):
+        if cancel_check is not None and cancel_check():
+            break
         fold_scores = []
         for fold in range(n_folds):
             train_end = (fold + 1) * fold_size

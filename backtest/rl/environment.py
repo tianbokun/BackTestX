@@ -11,7 +11,7 @@ class StockTradingEnv:
         commission_rate: float = 0.000235,
         min_commission: float = 5.0,
         stamp_duty: float = 0.001,
-        reward_window: int = 10,
+        reward_window: int = 22,
     ):
         self.state_vectors = state_vectors
         self.close = close_prices
@@ -78,19 +78,25 @@ class StockTradingEnv:
 
         if self.t >= self.n_steps - 1:
             self.done = True
-            reward = (pv - self.initial_capital) / self.initial_capital
-            reward -= self._last_trade_cost / self.initial_capital
-            return self._get_state(), reward, self.done
 
-        reward = self._calc_reward()
-        return self._get_state(), reward, self.done
+        return self._get_state(), self._calc_reward(), self.done
 
     def _calc_reward(self):
-        n = min(self.reward_window, self.t - 1)
-        if n < 1:
+        n = min(self.reward_window, self.t)
+        if n < 2:
             return 0.0
-        pv_now = self.portfolio_values[-1]
-        pv_start = self.portfolio_values[-n] if n <= len(self.portfolio_values) else self.initial_capital
-        base_reward = float((pv_now - pv_start) / max(pv_start, 1e-9))
+        pv_window = self.portfolio_values[-n:]
+        pv_start = pv_window[0]
+        base_ret = float((pv_window[-1] - pv_start) / max(pv_start, 1e-9))
+
+        peak = max(pv_window)
+        drawdown = (peak - pv_window[-1]) / max(peak, 1e-9)
+        dd_penalty = 0.5 * drawdown
+
+        daily_rets = np.diff(pv_window) / np.maximum(np.array(pv_window[:-1]), 1e-9)
+        vol = np.std(daily_rets)
+        vol_penalty = 0.3 * vol * np.sqrt(252)
+
         cost_penalty = self._last_trade_cost / self.initial_capital
-        return base_reward - cost_penalty
+
+        return base_ret - dd_penalty - vol_penalty - cost_penalty
