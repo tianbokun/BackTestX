@@ -19,6 +19,9 @@ cache/
 logs/
 *.log
 
+# Saved models (weight files)
+saved_models/
+
 # IDE
 .vscode/
 .idea/

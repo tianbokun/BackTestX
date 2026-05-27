@@ -30,6 +30,7 @@ from backtest.rl.trainer import (
     hyperparam_search,
 )
 from backtest.rl.dqn_agent import DQNAgent
+from backtest.rl.feature_engineer import FEATURE_GROUPS, DEFAULT_FEATURE_GROUPS
 from backtest.grid_search import (
     run_grid_search, save_result, list_saved_results, load_result,
 )
@@ -878,6 +879,25 @@ def _render_rl_training(df_full):
         help="basic=仅过去30日收盘价, 1.0=加入技术指标, 2.0=加入SVM/XGBoost涨跌信号",
     )
 
+    # ── 特征选择 ──
+    selected_groups = list(DEFAULT_FEATURE_GROUPS)
+    if system_version == "basic":
+        selected_groups = []
+    with st.sidebar.expander("📊 特征选择", expanded=False):
+        st.caption("选择 DQN 的输入特征 (basic 模式忽略)")
+        for key, grp in FEATURE_GROUPS.items():
+            is_on = st.checkbox(
+                grp["label"], value=key in DEFAULT_FEATURE_GROUPS,
+                key=f"fg_{key}", help=grp.get("help", ""),
+                disabled=(system_version == "basic"),
+            )
+            if is_on:
+                if key not in selected_groups:
+                    selected_groups.append(key)
+            else:
+                if key in selected_groups:
+                    selected_groups.remove(key)
+
     with st.sidebar.expander("💰 费率设置", expanded=False):
         rl_commission = st.number_input("佣金费率", min_value=0.0, value=0.000235, step=0.000005, format="%.6f",
                                         key="rl_commission", help="默认万2.35")
@@ -1042,6 +1062,7 @@ def _render_rl_training(df_full):
         try:
             hp_result = hyperparam_search(
                 df_hp, system_version=system_version,
+                feature_groups=selected_groups,
                 progress_callback=None,
                 combo_callback=_hp_combo_callback,
                 fold_callback=_hp_fold_callback,
@@ -1075,11 +1096,13 @@ def _render_rl_training(df_full):
         with st.spinner("正在训练/回测..."):
             best_agent, _ = train_dqn(
                 df_train, system_version=system_version,
+                feature_groups=selected_groups,
                 n_episodes=bp["n_episodes"], lr=bp["lr"], gamma=bp["gamma"],
                 hidden=bp["hidden"], epsilon_decay=bp["epsilon_decay"],
                 progress_callback=None, **fee_params,
             )
-            val_result = evaluate(best_agent, df_val, system_version=system_version, **fee_params)
+            val_result = evaluate(best_agent, df_val, system_version=system_version,
+                                  feature_groups=selected_groups, **fee_params)
             bh_val = run_bh_baseline(df_val, initial_capital=rl_capital_val)
 
         comp_val = pd.DataFrame([
@@ -1118,6 +1141,7 @@ def _render_rl_training(df_full):
                 save_path.parent.mkdir(parents=True, exist_ok=True)
                 st.session_state.rl_hp_agent.save(str(save_path), {
                     "symbol": sym, "system_version": sv,
+                    "feature_groups": selected_groups,
                     "train_start": str(train_start),
                     "train_end": str(train_end),
                     "source": "hyperparam_search",
@@ -1127,6 +1151,7 @@ def _render_rl_training(df_full):
                 st.session_state.rl_model_info = {
                     "name": save_path.stem, "path": str(save_path),
                     "symbol": sym, "system_version": sv,
+                    "feature_groups": selected_groups,
                 }
                 st.session_state.rl_model_just_saved = True
                 st.rerun()
@@ -1170,11 +1195,13 @@ def _render_rl_training(df_full):
         with st.spinner("正在训练 DQN 智能体..."):
             agent, _ = train_dqn(
                 df_train, system_version=system_version,
+                feature_groups=selected_groups,
                 progress_callback=_progress, **params, **fee_params,
             )
 
         with st.spinner("正在回测..."):
-            result_dqn = evaluate(agent, df_test, system_version=system_version, **fee_params)
+            result_dqn = evaluate(agent, df_test, system_version=system_version,
+                                  feature_groups=selected_groups, **fee_params)
             result_bh = run_bh_baseline(df_test, initial_capital=rl_capital_val)
 
         # 存入 session_state 持久化
@@ -1255,6 +1282,7 @@ def _render_rl_training(df_full):
                 save_path.parent.mkdir(parents=True, exist_ok=True)
                 agent.save(str(save_path), {
                     "symbol": sym, "system_version": sv,
+                    "feature_groups": selected_groups,
                     "train_start": meta_info["train_start"],
                     "train_end": meta_info["train_end"],
                     "test_return": result_dqn["total_return_pct"],
@@ -1264,6 +1292,7 @@ def _render_rl_training(df_full):
                 st.session_state.rl_model_info = {
                     "name": save_path.stem, "path": str(save_path),
                     "symbol": sym, "system_version": sv,
+                    "feature_groups": selected_groups,
                 }
                 st.session_state.rl_model_just_saved = True
                 st.rerun()
@@ -1308,9 +1337,10 @@ def _render_rl_signal(df_full):
 
     agent = st.session_state.rl_agent
     ver = info.get("system_version", "1.0")
+    fgs = info.get("feature_groups")
 
     with st.spinner("正在计算信号..."):
-        sig = predict_signal(agent, df, system_version=ver)
+        sig = predict_signal(agent, df, system_version=ver, feature_groups=fgs)
 
     action_map = {-1: ("🔴 卖出", "#ef4444"), 0: ("⚪ 持有", "#6b7280"), 1: ("🟢 买入", "#22c55e"), 2: ("🔴 卖出", "#ef4444")}
     label, color = action_map.get(sig, ("❓ 未知", "#888888"))
@@ -1343,7 +1373,7 @@ def _render_rl_signal(df_full):
 
     with st.expander("📈 近期信号历史", expanded=False):
         with st.spinner("正在回放信号..."):
-            signals = compute_signal_history(agent, df, system_version=ver)
+            signals = compute_signal_history(agent, df, system_version=ver, feature_groups=fgs)
         sig_df = pd.DataFrame({
             "日期": df.index[-60:],
             "信号": [action_map.get(s, ("?", "#888"))[0] for s in signals[-60:]],

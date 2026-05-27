@@ -11,6 +11,8 @@ from .feature_engineer import (
     get_state_vector,
     get_state_dim,
     compute_svm_xgb_signals,
+    get_selected_columns,
+    DEFAULT_FEATURE_GROUPS,
 )
 from .metrics import sharpe_ratio, max_drawdown
 
@@ -25,6 +27,7 @@ def _close_col(df):
 def train_dqn(
     df_train: pd.DataFrame,
     system_version: str = "1.0",
+    feature_groups: list[str] = None,
     n_episodes: int = 64,
     batch_size: int = 200,
     lr: float = 1e-5,
@@ -41,9 +44,12 @@ def train_dqn(
     initial_capital: float = 1.0,
     progress_callback=None,
 ) -> tuple:
+    if feature_groups is None:
+        feature_groups = DEFAULT_FEATURE_GROUPS
     close = _close_col(df_train)
     indicators = compute_technical_indicators(df_train)
-    indicators = normalize_indicators(indicators)
+    _, raw_cols = get_selected_columns(feature_groups)
+    indicators = normalize_indicators(indicators, raw_columns=raw_cols)
 
     svm_sig, xgb_sig = None, None
     if system_version == "2.0":
@@ -51,11 +57,11 @@ def train_dqn(
 
     state_vectors = []
     for t in range(len(close)):
-        sv = get_state_vector(indicators, t, system_version, svm_sig, xgb_sig)
+        sv = get_state_vector(indicators, t, system_version, feature_groups, svm_sig, xgb_sig)
         state_vectors.append(sv)
     state_vectors = np.array(state_vectors)
 
-    state_dim = get_state_dim(system_version)
+    state_dim = get_state_dim(system_version, feature_groups)
     dates = df_train.index.tolist()
 
     agent = DQNAgent(
@@ -99,14 +105,18 @@ def evaluate(
     agent: DQNAgent,
     df_test: pd.DataFrame,
     system_version: str = "1.0",
+    feature_groups: list[str] = None,
     initial_capital: float = 1.0,
     commission_rate: float = 0.00025,
     min_commission: float = 5.0,
     stamp_duty: float = 0.001,
 ) -> dict:
+    if feature_groups is None:
+        feature_groups = DEFAULT_FEATURE_GROUPS
     close = _close_col(df_test)
     indicators = compute_technical_indicators(df_test)
-    indicators = normalize_indicators(indicators)
+    _, raw_cols = get_selected_columns(feature_groups)
+    indicators = normalize_indicators(indicators, raw_columns=raw_cols)
 
     svm_sig, xgb_sig = None, None
     if system_version == "2.0":
@@ -114,7 +124,7 @@ def evaluate(
 
     state_vectors = []
     for t in range(len(close)):
-        sv = get_state_vector(indicators, t, system_version, svm_sig, xgb_sig)
+        sv = get_state_vector(indicators, t, system_version, feature_groups, svm_sig, xgb_sig)
         state_vectors.append(sv)
     state_vectors = np.array(state_vectors)
 
@@ -196,15 +206,19 @@ def predict_signal(
     agent: DQNAgent,
     df: pd.DataFrame,
     system_version: str = "1.0",
+    feature_groups: list[str] = None,
 ) -> int:
+    if feature_groups is None:
+        feature_groups = DEFAULT_FEATURE_GROUPS
     close = _close_col(df)
     indicators = compute_technical_indicators(df)
-    indicators = normalize_indicators(indicators)
+    _, raw_cols = get_selected_columns(feature_groups)
+    indicators = normalize_indicators(indicators, raw_columns=raw_cols)
     svm_sig, xgb_sig = None, None
     if system_version == "2.0":
         svm_sig, xgb_sig = compute_svm_xgb_signals(df)
     t = len(close) - 1
-    state = get_state_vector(indicators, t, system_version, svm_sig, xgb_sig)
+    state = get_state_vector(indicators, t, system_version, feature_groups, svm_sig, xgb_sig)
     return int(agent.act(state, eval_mode=True))
 
 
@@ -220,6 +234,7 @@ _HPARAM_GRID = {
 def hyperparam_search(
     df: pd.DataFrame,
     system_version: str = "1.0",
+    feature_groups: list[str] = None,
     commission_rate: float = 0.00025,
     min_commission: float = 5.0,
     stamp_duty: float = 0.001,
@@ -275,8 +290,8 @@ def hyperparam_search(
                 "initial_capital": initial_capital,
             }
             try:
-                agent, _ = train_dqn(df_fold_train, system_version, **params)
-                result = evaluate(agent, df_fold_val, system_version,
+                agent, _ = train_dqn(df_fold_train, system_version, feature_groups, **params)
+                result = evaluate(agent, df_fold_val, system_version, feature_groups,
                                   initial_capital=initial_capital,
                                   commission_rate=commission_rate,
                                   min_commission=min_commission,
@@ -319,16 +334,20 @@ def compute_signal_history(
     agent: DQNAgent,
     df: pd.DataFrame,
     system_version: str = "1.0",
+    feature_groups: list[str] = None,
 ) -> list:
+    if feature_groups is None:
+        feature_groups = DEFAULT_FEATURE_GROUPS
     close = _close_col(df)
     indicators = compute_technical_indicators(df)
-    indicators = normalize_indicators(indicators)
+    _, raw_cols = get_selected_columns(feature_groups)
+    indicators = normalize_indicators(indicators, raw_columns=raw_cols)
     svm_sig, xgb_sig = None, None
     if system_version == "2.0":
         svm_sig, xgb_sig = compute_svm_xgb_signals(df)
     signals = []
     for t in range(len(close)):
-        state = get_state_vector(indicators, t, system_version, svm_sig, xgb_sig)
+        state = get_state_vector(indicators, t, system_version, feature_groups, svm_sig, xgb_sig)
         action = int(agent.act(state, eval_mode=True))
         signals.append(action)
     return signals
