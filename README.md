@@ -136,8 +136,26 @@ pm2 startup
 
 ```
 stock_history_analysis/
-├── app.py                    # Streamlit 主应用（DCA + RL + 网格搜索）
-├── data_fetcher.py           # 数据获取层（缓存、重试、降级、回退）
+├── app.py                    # Streamlit 主应用（轻量路由器 + 侧边栏 + 数据获取）
+│
+├── core/                     # 共享核心模块（Phase 1）
+│   ├── config.py             #   中心化配置（费用、频率映射）
+│   └── xirr.py               #   唯一 XIRR 实现（牛顿法）
+│
+├── data/                     # 数据层模块（Phase 2）
+│   ├── asset_config.py       #   资产类型配置（个股/ETF/LOF/基金/指数）
+│   ├── cache.py              #   本地缓存（Parquet, 30天过期, LRU）
+│   └── fetcher.py            #   HTTP/API 数据获取（重试/降级/回退）
+│
+├── data_fetcher.py           # 向后兼容 shim（→ data.fetcher）
+│
+├── ui/                       # 前端展示模块（Phase 3）
+│   ├── _helpers.py           #   共享工具（cached_fetch, COLORS）
+│   ├── dca_backtest.py       #   定投回测页面
+│   ├── grid_search.py        #   网格搜索页面
+│   ├── rl_training.py        #   强化学习训练页面（含超参搜索）
+│   └── rl_signal.py          #   实时信号面板
+│
 ├── backtest/
 │   ├── dca.py                # 定投回测引擎（6 频率 + XIRR + 一次性投入）
 │   ├── strategies.py         # 智能策略实现（5 种 + 下跌加仓）

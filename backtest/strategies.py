@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 import pandas as pd
 import numpy as np
 
+from core.xirr import xirr
+from core.config import DEFAULT_COMMISSION_RATE, DEFAULT_MIN_COMMISSION, DEFAULT_STAMP_DUTY
+
 
 # ══════════════════════════════════════════════════════════════
 #  策略信息 (用于展示)
@@ -230,9 +233,9 @@ def run_dropbuy_backtest(
     max_total: float = 0.0,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    commission_rate: float = 0.00025,
-    min_commission: float = 5.0,
-    stamp_duty: float = 0.001,
+    commission_rate: float = DEFAULT_COMMISSION_RATE,
+    min_commission: float = DEFAULT_MIN_COMMISSION,
+    stamp_duty: float = DEFAULT_STAMP_DUTY,
 ) -> DropBuyResult:
     """
     下跌加仓策略回测
@@ -310,7 +313,7 @@ def run_dropbuy_backtest(
     total_return = (final_value - total_invested) / total_invested * 100
 
     cash_flows.append((prices.index[-1].to_pydatetime(), final_value))
-    annualized = _xirr(cash_flows) * 100
+    annualized = xirr(cash_flows) * 100
 
     records_df = pd.DataFrame(records)
 
@@ -383,9 +386,9 @@ def _build_smart_result(
     invest_entries: List[Tuple],  # [(date, amount, price, extra_info_dict?), ...]
     prices: pd.Series,
     max_total: float = 0,
-    commission_rate: float = 0.00025,
-    min_commission: float = 5.0,
-    stamp_duty: float = 0.001,
+    commission_rate: float = DEFAULT_COMMISSION_RATE,
+    min_commission: float = DEFAULT_MIN_COMMISSION,
+    stamp_duty: float = DEFAULT_STAMP_DUTY,
 ) -> dict:
     """
     通用的策略结果构建器
@@ -426,7 +429,7 @@ def _build_smart_result(
 
     cash_flows = [(d.to_pydatetime(), -amt) for d, amt, _ in cleaned]
     cash_flows.append((prices.index[-1].to_pydatetime(), final_value))
-    annualized = _xirr(cash_flows) * 100
+    annualized = xirr(cash_flows) * 100
 
     records = []
     cs, ci = 0.0, 0.0

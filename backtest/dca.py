@@ -13,6 +13,9 @@ from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 
+from core.xirr import xirr
+from core.config import DAILY_MULTIPLIER, freq_map, DEFAULT_COMMISSION_RATE, DEFAULT_MIN_COMMISSION, DEFAULT_STAMP_DUTY
+
 
 def _get_invest_dates(
     index: pd.DatetimeIndex,
@@ -145,9 +148,9 @@ def run_dca_backtest(
     amount: float = 1000,
     day: int = 1,
     max_total: float = 0,
-    commission_rate: float = 0.00025,
-    min_commission: float = 5.0,
-    stamp_duty: float = 0.001,
+    commission_rate: float = DEFAULT_COMMISSION_RATE,
+    min_commission: float = DEFAULT_MIN_COMMISSION,
+    stamp_duty: float = DEFAULT_STAMP_DUTY,
 ) -> dict:
     """
     执行定投回测
@@ -265,7 +268,7 @@ def run_dca_backtest(
     final_value = final_value_before - sell_commission - sell_stamp
     total_return = (final_value - total_invested) / total_invested * 100 if total_invested > 0 else 0
     cash_flows.append((prices.index[-1].to_pydatetime(), final_value))
-    annualized = _xirr(cash_flows) * 100
+    annualized = xirr(cash_flows) * 100
     records_df = pd.DataFrame(records)
 
     portfolio_values = []
@@ -332,9 +335,9 @@ def run_lump_sum_backtest(
     start_date: str,
     end_date: str,
     total_amount: float,
-    commission_rate: float = 0.00025,
-    min_commission: float = 5.0,
-    stamp_duty: float = 0.001,
+    commission_rate: float = DEFAULT_COMMISSION_RATE,
+    min_commission: float = DEFAULT_MIN_COMMISSION,
+    stamp_duty: float = DEFAULT_STAMP_DUTY,
 ) -> dict:
     """
     一次性投入回测 (用于对比定投)
