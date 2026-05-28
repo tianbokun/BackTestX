@@ -145,6 +145,52 @@ class SymbolRegistry:
         return df
 
     @staticmethod
+    def autofetch_meta(symbol: str, asset_type: str) -> dict:
+        import pandas as pd
+        from data.fetcher import fetch_history, get_etf_list, get_open_fund_list
+
+        if not symbol.strip():
+            raise ValueError("请输入代码")
+        df = fetch_history(asset_type=asset_type, symbol=symbol.strip(), start_date="19900101")
+        if df is None or df.empty:
+            raise ValueError(f"无法获取 {symbol} 的数据，请检查代码和资产类型")
+        start_date = str(df.index.min().date()).replace("-", "")
+
+        name = None
+        if asset_type in ("etf", "lof"):
+            try:
+                lst = get_etf_list()
+                if lst is not None and not lst.empty:
+                    row = lst[lst["基金代码"] == symbol.strip()]
+                    if not row.empty:
+                        name = str(row.iloc[0]["基金简称"])
+            except Exception:
+                pass
+        elif asset_type == "open_fund":
+            try:
+                lst = get_open_fund_list()
+                if lst is not None and not lst.empty:
+                    row = lst[lst["基金代码"] == symbol.strip()]
+                    if not row.empty:
+                        name = str(row.iloc[0]["基金简称"])
+            except Exception:
+                pass
+        elif asset_type == "stock":
+            try:
+                import akshare as ak
+                info = ak.stock_individual_info_em(symbol=symbol.strip())
+                if not info.empty:
+                    row = info[info["item"] == "股票名称"]
+                    if not row.empty:
+                        name = str(row.iloc[0]["value"])
+            except Exception:
+                pass
+        if not name:
+            name = symbol.strip()
+
+        return {"name": name, "start_date": start_date}
+
+    @staticmethod
     def get_cache_info(symbol: str) -> dict:
         from data.cache import cache_key, read_cache
         entry = SymbolRegistry.get(symbol)

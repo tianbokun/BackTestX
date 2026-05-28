@@ -1,5 +1,3 @@
-from datetime import date
-
 import streamlit as st
 import pandas as pd
 
@@ -29,15 +27,44 @@ def render_symbol_manager():
             all_tags.add(t)
     all_tags = sorted(all_tags)
 
-    col_filter, col_add = st.columns([2, 1])
-    with col_filter:
-        filter_type = st.selectbox("资产类型过滤", ["全部", "stock", "etf", "lof", "open_fund", "index"])
-        filter_tag = st.selectbox("标签过滤", ["全部"] + all_tags)
+    filter_type = st.selectbox("资产类型过滤", ["全部", "stock", "etf", "lof", "open_fund", "index"])
+    filter_tag = st.selectbox("标签过滤", ["全部"] + all_tags)
 
-    with col_add:
-        st.markdown("")
-        st.markdown("")
-        add_btn = st.button("➕ 添加代码", type="primary", use_container_width=True)
+    st.markdown("#### ➕ 添加新代码")
+    with st.container(border=True):
+        ai1, ai2, ai3, ai4 = st.columns([1.5, 1, 2, 1])
+        with ai1:
+            new_symbol = st.text_input("代码", placeholder="如 510300", key="add_symbol")
+        with ai2:
+            new_asset_type = st.selectbox("资产类型", ["etf", "stock", "lof", "open_fund", "index"], key="add_type")
+        with ai3:
+            new_tags_str = st.text_input("标签 (逗号分隔)", placeholder="宽基ETF, 科技", key="add_tags")
+        with ai4:
+            st.markdown("")
+            st.markdown("")
+            if st.button("➕ 添加", type="primary", use_container_width=True, key="add_confirm"):
+                if not new_symbol.strip():
+                    st.error("请输入代码")
+                else:
+                    tags = [t.strip() for t in new_tags_str.split(",") if t.strip()]
+                    with st.spinner(f"正在获取 {new_symbol.strip()} 信息..."):
+                        try:
+                            meta = SymbolRegistry.autofetch_meta(new_symbol.strip(), new_asset_type)
+                        except ValueError as e:
+                            st.error(str(e))
+                            st.stop()
+                    ok = SymbolRegistry.add(
+                        symbol=new_symbol.strip(),
+                        name=meta["name"],
+                        asset_type=new_asset_type,
+                        start_date=meta["start_date"],
+                        tags=tags,
+                    )
+                    if ok:
+                        st.success(f"已添加 {new_symbol} — {meta['name']}（数据自 {meta['start_date']}）")
+                        st.rerun()
+                    else:
+                        st.error(f"代码 {new_symbol} 已存在")
 
     symbols = SymbolRegistry.list()
     if filter_type != "全部":
@@ -127,55 +154,6 @@ def render_symbol_manager():
                     for sym in selected:
                         SymbolRegistry.remove(sym)
                     st.success(f"已删除 {n} 个代码")
-                    st.rerun()
-
-    if add_btn:
-        st.session_state.show_add_form = True
-
-    if st.session_state.get("show_add_form", False):
-        with st.container(border=True):
-            st.markdown("#### ➕ 添加新代码")
-            add_col1, add_col2 = st.columns(2)
-            with add_col1:
-                new_symbol = st.text_input("代码", key="add_symbol")
-                new_name = st.text_input("名称", key="add_name")
-                new_asset_type = st.selectbox(
-                    "资产类型",
-                    ["etf", "stock", "lof", "open_fund", "index"],
-                    key="add_type",
-                )
-            with add_col2:
-                today_default = date.today()
-                new_start = st.date_input("开始日期", value=date(today_default.year - 5, 1, 1),
-                                          key="add_start")
-                new_tags_str = st.text_input("标签 (逗号分隔)", key="add_tags",
-                                             help="如: 宽基ETF, 科技, 新能源")
-                new_notes = st.text_area("备注", key="add_notes", height=68)
-
-            col_confirm, col_cancel = st.columns([1, 5])
-            with col_confirm:
-                if st.button("确认添加", type="primary", key="add_confirm"):
-                    if not new_symbol.strip():
-                        st.error("请输入代码")
-                    else:
-                        tags = [t.strip() for t in new_tags_str.split(",") if t.strip()]
-                        ok = SymbolRegistry.add(
-                            symbol=new_symbol.strip(),
-                            name=new_name.strip() or new_symbol.strip(),
-                            asset_type=new_asset_type,
-                            start_date=new_start.strftime("%Y%m%d"),
-                            tags=tags,
-                            notes=new_notes.strip(),
-                        )
-                        if ok:
-                            st.success(f"已添加 {new_symbol}")
-                            st.session_state.show_add_form = False
-                            st.rerun()
-                        else:
-                            st.error(f"代码 {new_symbol} 已存在")
-            with col_cancel:
-                if st.button("取消", key="add_cancel"):
-                    st.session_state.show_add_form = False
                     st.rerun()
 
     mirror = SymbolRegistry.list()
