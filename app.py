@@ -18,6 +18,8 @@ from ui._helpers import cached_fetch
 from ui.dca_backtest import render_dca_backtest
 from ui.grid_search import render_grid_search
 from ui.rl_training import render_rl_training
+from ui.hierarchical_rl import render_hierarchical_rl
+from ui.symbol_manager import render_symbol_manager
 
 
 # ══════════════════════════════════════════════════════════════
@@ -353,32 +355,53 @@ for key in ("rl_model_just_saved",):
 
 
 # ══════════════════════════════════════════════════════════════
-#  侧边栏 — 公共参数
+#  顶部 Tab 导航 — Pill Tabs
 # ══════════════════════════════════════════════════════════════
 
-asset_type = st.sidebar.selectbox(
-    "资产类型",
-    options=list(ASSET_TYPE_CONFIG.keys()),
-    format_func=lambda x: ASSET_TYPE_CONFIG[x]["label"],
+mode = st.radio(
+    "_mode",
+    ["📊 定投回测", "🎯 网格搜索", "🤖 强化学习", "🧠 分层RL", "📋 代码管理"],
+    horizontal=True,
+    label_visibility="collapsed",
+    key="mode_tab",
 )
-asset_config = ASSET_TYPE_CONFIG[asset_type]
-symbol = st.sidebar.text_input(
-    "代码", placeholder=asset_config["search_hint"],
-    help="输入资产代码, 如 000001, 510300, 110011",
-).strip()
 
-today = date.today()
-col1, col2 = st.sidebar.columns(2)
-with col1:
-    start_date = col1.date_input(
-        "开始日期", value=date(today.year - 5, 1, 1),
-        min_value=date(1990, 1, 1), max_value=today,
+
+# ══════════════════════════════════════════════════════════════
+#  侧边栏 — 公共参数 (按 Tab 条件显示)
+# ══════════════════════════════════════════════════════════════
+
+needs_sidebar_symbol = mode.startswith("📊") or mode.startswith("🎯")
+
+if needs_sidebar_symbol:
+    asset_type = st.sidebar.selectbox(
+        "资产类型",
+        options=list(ASSET_TYPE_CONFIG.keys()),
+        format_func=lambda x: ASSET_TYPE_CONFIG[x]["label"],
     )
-with col2:
-    end_date = col2.date_input(
-        "结束日期", value=today,
-        min_value=date(1990, 1, 1), max_value=today,
-    )
+    asset_config = ASSET_TYPE_CONFIG[asset_type]
+    symbol = st.sidebar.text_input(
+        "代码", placeholder=asset_config["search_hint"],
+        help="输入资产代码, 如 000001, 510300, 110011",
+    ).strip()
+    today = date.today()
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        start_date = col1.date_input(
+            "开始日期", value=date(today.year - 5, 1, 1),
+            min_value=date(1990, 1, 1), max_value=today,
+        )
+    with col2:
+        end_date = col2.date_input(
+            "结束日期", value=today,
+            min_value=date(1990, 1, 1), max_value=today,
+        )
+else:
+    asset_type = "etf"
+    symbol = ""
+    today = date.today()
+    start_date = date(today.year - 5, 1, 1)
+    end_date = today
 
 adjust = st.sidebar.selectbox(
     "复权方式",
@@ -389,25 +412,12 @@ adjust = st.sidebar.selectbox(
 
 
 # ══════════════════════════════════════════════════════════════
-#  顶部 Tab 导航 — Pill Tabs
-# ══════════════════════════════════════════════════════════════
-
-mode = st.radio(
-    "_mode",
-    ["📊 定投回测", "🎯 网格搜索", "🤖 强化学习"],
-    horizontal=True,
-    label_visibility="collapsed",
-    key="mode_tab",
-)
-
-
-# ══════════════════════════════════════════════════════════════
-#  数据获取
+#  数据获取 (仅 DCA / 网格搜索 需要)
 # ══════════════════════════════════════════════════════════════
 
 def _fetch_data():
     if not symbol:
-        st.info(f"👈 请在侧边栏输入{asset_config['label']}代码后开始")
+        st.info(f"👈 请在侧边栏输入{ASSET_TYPE_CONFIG[asset_type]['label']}代码后开始")
         st.stop()
     df = None
     try:
@@ -426,13 +436,14 @@ def _fetch_data():
         st.stop()
     return df, price
 
-df, price_series = _fetch_data()
+if needs_sidebar_symbol:
+    df, price_series = _fetch_data()
 
-with st.expander("📋 原始数据预览", expanded=False):
-    display_df = df.copy()
-    if isinstance(display_df.index, pd.DatetimeIndex):
-        display_df = display_df.reset_index()
-    st.dataframe(display_df.tail(20), width='stretch')
+    with st.expander("📋 原始数据预览", expanded=False):
+        display_df = df.copy()
+        if isinstance(display_df.index, pd.DatetimeIndex):
+            display_df = display_df.reset_index()
+        st.dataframe(display_df.tail(20), width='stretch')
 
 
 # ══════════════════════════════════════════════════════════════
@@ -441,10 +452,14 @@ with st.expander("📋 原始数据预览", expanded=False):
 
 if mode.startswith("📊"):
     render_dca_backtest(price_series, start_date, end_date)
-elif mode.startswith("🤖"):
-    render_rl_training(df, end_date, symbol, asset_type, adjust)
-else:
+elif mode.startswith("🎯"):
     render_grid_search(price_series, start_date, end_date, symbol)
+elif mode.startswith("🤖"):
+    render_rl_training(end_date, adjust)
+elif mode.startswith("🧠"):
+    render_hierarchical_rl(end_date, adjust)
+elif mode.startswith("📋"):
+    render_symbol_manager()
 
 
 # ── 页脚 ──

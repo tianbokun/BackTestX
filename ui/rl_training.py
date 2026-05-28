@@ -14,7 +14,7 @@ from backtest.rl.trainer import (
 )
 from backtest.rl.dqn_agent import DQNAgent
 from backtest.rl.feature_engineer import FEATURE_GROUPS, DEFAULT_FEATURE_GROUPS
-from ui._helpers import cached_fetch
+from data.symbol_registry import SymbolRegistry
 from ui.rl_signal import render_rl_signal
 
 # ── Threading globals for cancelable HP search ──
@@ -23,31 +23,42 @@ _hp_output: dict = {}
 _hp_progress: dict = {}
 
 
-def render_rl_training(df_full, end_date, symbol, asset_type, adjust):
+def render_rl_training(end_date, adjust):
     st.title("🤖 DQN 强化学习训练系统")
 
-    # 归一化列名
+    st.sidebar.markdown("### 🤖 强化学习参数")
+
+    all_symbols = SymbolRegistry.list()
+    if not all_symbols:
+        st.error("尚未添加任何代码。请先在「📋 代码管理」中添加。")
+        st.stop()
+
+    type_filter = st.sidebar.selectbox(
+        "资产类型",
+        ["全部"] + sorted(set(s["asset_type"] for s in all_symbols)),
+        key="rl_reg_type",
+    )
+    filtered = all_symbols if type_filter == "全部" else [s for s in all_symbols if s["asset_type"] == type_filter]
+    symbol_options = {f"{s['symbol']} - {s['name']}": s["symbol"] for s in filtered}
+    selected_label = st.sidebar.selectbox(
+        "选择代码", list(symbol_options.keys()), key="rl_reg_symbol"
+    )
+    symbol = symbol_options[selected_label]
+    entry = SymbolRegistry.get(symbol)
+    asset_type = entry["asset_type"] if entry else "stock"
+
     rename_map = {"开盘": "开盘价", "收盘": "收盘价", "最高": "最高价", "最低": "最低价"}
-    df = df_full.copy()
+
+    with st.spinner(f"正在获取 {symbol} 数据..."):
+        df = SymbolRegistry.fetch_data(symbol, adjust=adjust)
+    if df is None or df.empty:
+        st.error(f"获取 {symbol} 数据失败")
+        st.stop()
+    df = df.copy()
     df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
-
-    # 场外基金/净值型资产只有收盘价, 用同一价格填充 OHLC 四列
     df = ensure_ohlc(df)
-
-    # 对 ETF/LOF 添加溢价率列
     df = add_premium_rate(df, symbol, asset_type)
     has_premium = "溢价率" in df.columns
-
-    # 重新拉取全量数据 (RL 需要尽可能多的历史数据)
-    rl_start_str = "20000101"
-    rl_end_str = end_date.strftime("%Y%m%d")
-    df_wide = cached_fetch(symbol, asset_type, rl_start_str, rl_end_str, adjust)
-    if df_wide is not None and len(df_wide) > len(df):
-        df = df_wide.copy()
-        df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
-        df = ensure_ohlc(df)
-        df = add_premium_rate(df, symbol, asset_type)
-        has_premium = "溢价率" in df.columns
 
     total_n = len(df)
     # 自动 60/20/20 分割

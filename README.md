@@ -23,6 +23,8 @@ A股定投回测系统是一个功能全面的 **定投策略回测 Web 应用**
 - **Walk-Forward 网格搜索**：自动寻找最优参数组合
 - **多策略同图叠加对比**：收益率、持仓市值、累计投入一览无余
 - **🤖 DQN 强化学习交易系统**：RL 交易智能体，支持实时信号、模型持久化、超参搜索
+- **🧠 分层强化学习 (PPO+DQN)**：上层 PPO 择时 + 下层 DQN 选股，多 ETF 组合管理
+- **📋 代码管理中心**：统一代码注册表，缓存优先数据获取，RL 勾选使用
 
 > 数据来源：东方财富 (East Money) → AKShare 接口，支持个股 / ETF / LOF / 开放式基金 / 指数，自动缓存、自动降级、自动跨类型回退。
 
@@ -145,7 +147,8 @@ stock_history_analysis/
 ├── data/                     # 数据层模块（Phase 2）
 │   ├── asset_config.py       #   资产类型配置（个股/ETF/LOF/基金/指数）
 │   ├── cache.py              #   本地缓存（Parquet, 30天过期, LRU）
-│   └── fetcher.py            #   HTTP/API 数据获取（重试/降级/回退）
+│   ├── fetcher.py            #   HTTP/API 数据获取（重试/降级/回退）
+│   └── symbol_registry.py    #   代码注册表管理（CRUD + 缓存优先获取）
 │
 ├── data_fetcher.py           # 向后兼容 shim（→ data.fetcher）
 │
@@ -153,8 +156,10 @@ stock_history_analysis/
 │   ├── _helpers.py           #   共享工具（cached_fetch, COLORS）
 │   ├── dca_backtest.py       #   定投回测页面
 │   ├── grid_search.py        #   网格搜索页面
+│   ├── hierarchical_rl.py    #   分层强化学习页面（PPO+DQN 择时选股）
+│   ├── rl_signal.py          #   实时信号面板
 │   ├── rl_training.py        #   强化学习训练页面（含超参搜索）
-│   └── rl_signal.py          #   实时信号面板
+│   └── symbol_manager.py     #   代码管理中心 UI（CRUD + 批量删除 + 同步）
 │
 ├── backtest/
 │   ├── dca.py                # 定投回测引擎（6 频率 + XIRR + 一次性投入）
@@ -162,11 +167,15 @@ stock_history_analysis/
 │   ├── grid_search.py        # 网格搜索引擎（Walk-Forward CV + 持久化）
 │   ├── strategy_results/     # 网格搜索结果存储目录
 │   └── rl/
-│       ├── environment.py    # 强化学习交易环境（状态/动作/奖励/交易成本）
-│       ├── dqn_agent.py      # DQN 智能体（Q 网络、经验回放、保存/加载）
-│       ├── trainer.py        # 训练引擎 + 超参搜索 + 评估 + 信号预测
+│       ├── dqn_agent.py      #   DQN 智能体（Q 网络、经验回放、保存/加载）
+│       ├── environment.py    #   强化学习交易环境（状态/动作/奖励/交易成本）
 │       ├── feature_engineer.py  # 特征工程（18+ 技术指标 + SVM/XGBoost）
-│       └── metrics.py        # 评估指标（夏普比率、最大回撤）
+│       ├── hierarchical_trainer.py  # 分层强化学习训练器（PPO 择时 + DQN 选股）
+│       ├── metrics.py        #   评估指标（夏普比率、最大回撤）
+│       ├── multi_asset_env.py    # 多资产交易环境（分层 RL 用）
+│       ├── ppo_agent.py      #   PPO 智能体（Actor-Critic，择时决策）
+│       └── trainer.py        #   训练引擎 + 超参搜索 + 评估 + 信号预测
+├── data/symbol_registry.json # 代码注册表持久化文件（自动管理）
 ├── saved_models/rl/          # RL 模型存储目录（.pt 格式）
 ├── cache/                    # Parquet 数据缓存（30 天过期）
 ├── logs/                     # PM2 运行日志
