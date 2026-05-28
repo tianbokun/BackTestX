@@ -262,6 +262,7 @@ class MultiAssetTradingEnv:
             sym: {
                 "shares": round(float(self.positions.get(sym, 0)), 4),
                 "value": round(float(self.positions.get(sym, 0) * self._get_close(sym)), 2),
+                "ratio": round(float(self.positions.get(sym, 0) * self._get_close(sym) / max(pv, 1) * 100), 2),
             }
             for sym in self.symbols
         }

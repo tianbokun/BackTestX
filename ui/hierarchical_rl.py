@@ -16,7 +16,7 @@ from data.symbol_registry import SymbolRegistry
 
 def _init_session_keys():
     for k in ("hrl_trainer", "hrl_train_result", "hrl_val_result", "hrl_test_result",
-              "hrl_capital", "hrl_test_dates"):
+              "hrl_capital", "hrl_test_dates", "hrl_benchmarks"):
         if k not in st.session_state:
             st.session_state[k] = None
 
@@ -229,6 +229,9 @@ def render_hierarchical_rl(end_date, adjust):
             st.session_state.hrl_test_result = test_result
             st.session_state.hrl_test_dates = test_dates
 
+            benchmarks = test_trainer.compute_benchmarks()
+            st.session_state.hrl_benchmarks = benchmarks
+
         st.session_state.hrl_trainer = trainer
         st.session_state.hrl_train_result = train_result
         st.session_state.hrl_capital = float(hrl_capital)
@@ -241,18 +244,53 @@ def render_hierarchical_rl(end_date, adjust):
         st.markdown("---")
         st.subheader("📊 分层 RL 回测结果")
 
+        benchmarks = st.session_state.hrl_benchmarks
+
         st.markdown("#### 📋 测试集策略指标")
-        comp = pd.DataFrame([{
+        rows = [{
             "策略": "HRL (PPO择时 + DQN选股)",
             "最终金额": test_result["final_value"],
             "收益率%": test_result["total_return_pct"],
             "夏普比率": test_result["sharpe_ratio"],
             "最大回撤%": test_result["max_drawdown_pct"],
-        }])
+        }]
+        if benchmarks:
+            ew = benchmarks.get("equal_weight_bh")
+            if ew:
+                rows.append({
+                    "策略": "等权买入持有",
+                    "最终金额": ew["final_value"],
+                    "收益率%": ew["total_return_pct"],
+                    "夏普比率": ew["sharpe_ratio"],
+                    "最大回撤%": ew["max_drawdown_pct"],
+                })
+            for dca_key, dca_label in [("monthly_dca", "月定投(等权)"), ("ma_adjust_dca", "均线偏离定投(等权)")]:
+                dca = benchmarks.get(dca_key)
+                if dca:
+                    rows.append({
+                        "策略": dca_label,
+                        "最终金额": dca["final_value"],
+                        "收益率%": dca["total_return_pct"],
+                        "夏普比率": dca.get("sharpe_ratio", "N/A"),
+                        "最大回撤%": dca.get("max_drawdown_pct", "N/A"),
+                    })
+        comp = pd.DataFrame(rows)
         st.dataframe(comp, width='stretch', hide_index=True)
 
         if test_result.get("equity_curve") is not None:
             st.markdown("#### 📈 累计净值曲线")
+
+            single_bh = (benchmarks or {}).get("single_etf_bh", {})
+            if single_bh:
+                selected_syms = st.multiselect(
+                    "显示单只ETF全仓持有对比",
+                    options=list(single_bh.keys()),
+                    default=[],
+                    key="hrl_bh_selector",
+                )
+            else:
+                selected_syms = []
+
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=test_result["dates"],
@@ -261,9 +299,45 @@ def render_hierarchical_rl(end_date, adjust):
                 line=dict(color="#2563eb", width=2),
             ))
             fig.add_hline(y=float(capital), line_dash="dot", line_color="gray", annotation_text="初始本金")
+
+            if benchmarks:
+                ew = benchmarks.get("equal_weight_bh")
+                if ew:
+                    fig.add_trace(go.Scatter(
+                        x=test_result["dates"],
+                        y=ew["equity_curve"],
+                        mode="lines", name="等权买入持有",
+                        line=dict(color="#ef4444", width=2, dash="dash"),
+                    ))
+                for dca_key, dca_label, dca_color in [
+                    ("monthly_dca", "月定投(等权)", "#10b981"),
+                    ("ma_adjust_dca", "均线偏离定投(等权)", "#f59e0b"),
+                ]:
+                    dca = benchmarks.get(dca_key)
+                    if dca is not None and "total_value_series" in dca:
+                        dca_curve = dca["total_value_series"].reindex(
+                            pd.DatetimeIndex(test_result["dates"])
+                        ).ffill().fillna(float(capital)).values
+                        fig.add_trace(go.Scatter(
+                            x=test_result["dates"],
+                            y=dca_curve,
+                            mode="lines", name=dca_label,
+                            line=dict(color=dca_color, width=1.5, dash="dot"),
+                        ))
+                bh_colors = ["#8b5cf6", "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#a855f7"]
+                for i, sym in enumerate(selected_syms):
+                    bh = single_bh.get(sym)
+                    if bh is not None:
+                        fig.add_trace(go.Scatter(
+                            x=test_result["dates"],
+                            y=bh["equity_curve"],
+                            mode="lines", name=f"{sym}全仓持有",
+                            line=dict(color=bh_colors[i % len(bh_colors)], width=1.5, dash="dot"),
+                        ))
+
             fig.update_layout(
                 xaxis_title="日期", yaxis_title=f"账户总值 (初始={capital:,.0f})",
-                hovermode="x unified", height=400,
+                hovermode="x unified", height=450,
                 margin=dict(l=10, r=10, t=10, b=10),
                 legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
             )
@@ -285,6 +359,13 @@ def render_hierarchical_rl(end_date, adjust):
                 margin=dict(l=10, r=10, t=10, b=10),
             )
             st.plotly_chart(fig2, width='stretch')
+
+        if "trade_log" in test_result and not test_result["trade_log"].empty:
+            with st.expander("📝 交易记录", expanded=False):
+                st.dataframe(test_result["trade_log"], width='stretch', hide_index=True)
+                if "trade_events" in test_result and not test_result["trade_events"].empty:
+                    st.caption("交易事件（仅操作变化日）:")
+                    st.dataframe(test_result["trade_events"], width='stretch', hide_index=True)
 
         st.markdown("---")
         st.markdown("#### 💾 保存模型")

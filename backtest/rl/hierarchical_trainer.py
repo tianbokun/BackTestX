@@ -204,10 +204,13 @@ class HierarchicalTrainer:
         market_state, etf_states = env.reset()
         done = False
 
+        ACTION_LABELS = {0: "持有", 1: "买入", 2: "卖出"}
+
         portfolio_values = [env.initial_capital]
         position_ratio_history = []
         actions_history = []
         dates = []
+        trade_log = []
 
         while not done:
             position_ratio, _, _ = self.ppo.act(market_state, eval_mode=True)
@@ -223,7 +226,21 @@ class HierarchicalTrainer:
             portfolio_values.append(pv)
             position_ratio_history.append(position_ratio)
             actions_history.append(actions)
-            dates.append(env.dates[min(env.t, len(env.dates) - 1)] if env.t < len(env.dates) else env.dates[-1])
+            date = env.dates[min(env.t, len(env.dates) - 1)] if env.t < len(env.dates) else env.dates[-1]
+            dates.append(date)
+
+            entry = {
+                "日期": date,
+                "PPO仓位%": round(float(position_ratio) * 100, 1),
+                "现金": info["cash"],
+                "总资产": info["portfolio_value"],
+            }
+            for sym in self.symbols:
+                pos = info["positions"].get(sym, {})
+                entry[f"{sym}_操作"] = ACTION_LABELS.get(actions.get(sym, 0), "?")
+                entry[f"{sym}_市值"] = pos.get("value", 0)
+                entry[f"{sym}_比例%"] = pos.get("ratio", 0)
+            trade_log.append(entry)
 
             market_state = next_market
             etf_states = next_etf_states
@@ -235,6 +252,20 @@ class HierarchicalTrainer:
         sharpe = sharpe_ratio(daily_returns)
         mdd = max_drawdown(pv_array)
 
+        trade_log_df = pd.DataFrame(trade_log)
+        op_cols = [c for c in trade_log_df.columns if c.endswith("_操作")]
+        if len(trade_log_df) > 0 and len(op_cols) > 0:
+            prev_ops = None
+            event_rows = []
+            for _, row in trade_log_df.iterrows():
+                cur_ops = tuple(row[c] for c in op_cols)
+                if prev_ops is None or cur_ops != prev_ops:
+                    event_rows.append(row)
+                prev_ops = cur_ops
+            trade_events_df = pd.DataFrame(event_rows) if event_rows else pd.DataFrame()
+        else:
+            trade_events_df = pd.DataFrame()
+
         return {
             "final_value": round(float(pv_array[-1]), 2),
             "total_return_pct": round(float(total_ret), 2),
@@ -244,6 +275,8 @@ class HierarchicalTrainer:
             "dates": dates,
             "position_ratios": position_ratio_history,
             "actions": actions_history,
+            "trade_log": trade_log_df,
+            "trade_events": trade_events_df,
         }
 
     def run_bh_baseline(self):
@@ -283,6 +316,106 @@ class HierarchicalTrainer:
             "max_drawdown_pct": round(mdd, 2),
             "equity_curve": total_pv,
         }
+
+    def _build_composite_nav(self):
+        prices = {}
+        for sym in self.symbols:
+            cs = _close_col_safe(self.etf_data.get(sym))
+            if cs is not None:
+                prices[sym] = cs
+        if not prices:
+            return None
+        combined = pd.concat(prices, axis=1)
+        combined = combined.dropna()
+        normalized = combined / combined.iloc[0]
+        composite = normalized.mean(axis=1)
+        return composite
+
+    def _run_single_etf_bh(self, symbol):
+        cs = _close_col_safe(self.etf_data.get(symbol))
+        if cs is None:
+            return None
+        arr = cs.reindex(pd.DatetimeIndex(self.aligned_dates)).values.astype(float)
+        arr = np.nan_to_num(arr, nan=arr[~np.isnan(arr)][0] if len(arr[~np.isnan(arr)]) > 0 else 1.0)
+        capital = self.fee_params["initial_capital"]
+        shares = capital / arr[0]
+        pv = shares * arr
+        final = float(pv[-1])
+        ret = (final - capital) / capital * 100
+        dr = np.diff(pv) / pv[:-1] if len(pv) > 1 else np.array([0])
+        sharpe = sharpe_ratio(dr)
+        mdd = max_drawdown(pv)
+        return {
+            "symbol": symbol,
+            "final_value": round(final, 2),
+            "total_return_pct": round(ret, 2),
+            "sharpe_ratio": round(sharpe, 4),
+            "max_drawdown_pct": round(mdd, 2),
+            "equity_curve": pv,
+        }
+
+    def compute_benchmarks(self):
+        capital = self.fee_params["initial_capital"]
+        results = {}
+
+        results["equal_weight_bh"] = self.run_bh_baseline()
+
+        results["single_etf_bh"] = {}
+        for sym in self.symbols:
+            bh = self._run_single_etf_bh(sym)
+            if bh is not None:
+                results["single_etf_bh"][sym] = bh
+
+        composite = self._build_composite_nav()
+        if composite is not None and len(composite) >= 22:
+            n_periods = max(1, len(composite) // 22)
+            base_amount = capital / n_periods / 22
+            start = str(composite.index[0])[:10]
+            end = str(composite.index[-1])[:10]
+            try:
+                from backtest.dca import run_dca_backtest
+                results["monthly_dca"] = run_dca_backtest(
+                    composite, start, end, "monthly", base_amount,
+                    commission_rate=self.fee_params["commission_rate"],
+                    min_commission=self.fee_params["min_commission"],
+                    stamp_duty=self.fee_params["stamp_duty"],
+                )
+                if results["monthly_dca"] and "portfolio_series" in results["monthly_dca"] and "invested_series" in results["monthly_dca"]:
+                    ps = results["monthly_dca"]["portfolio_series"]
+                    inv = results["monthly_dca"]["invested_series"]
+                    total_val = ps + (capital - inv.reindex(ps.index).fillna(0))
+                    results["monthly_dca"]["total_value_series"] = total_val
+                    pv = total_val.values
+                    if len(pv) > 1:
+                        dr = np.diff(pv) / pv[:-1]
+                        results["monthly_dca"]["sharpe_ratio"] = round(float(sharpe_ratio(dr)), 4)
+                        results["monthly_dca"]["max_drawdown_pct"] = round(float(max_drawdown(pv)), 2)
+                        results["monthly_dca"]["total_return_pct"] = round(float((pv[-1] - capital) / capital * 100), 2)
+                        results["monthly_dca"]["final_value"] = round(float(pv[-1]), 2)
+            except Exception:
+                results["monthly_dca"] = None
+            try:
+                from backtest.strategies import run_ma_adjust_dca
+                results["ma_adjust_dca"] = run_ma_adjust_dca(
+                    composite, start, end, base_amount,
+                    ma_period=250,
+                )
+                if results["ma_adjust_dca"] and "portfolio_series" in results["ma_adjust_dca"] and "invested_series" in results["ma_adjust_dca"]:
+                    ps = results["ma_adjust_dca"]["portfolio_series"]
+                    inv = results["ma_adjust_dca"]["invested_series"]
+                    total_val = ps + (capital - inv.reindex(ps.index).fillna(0))
+                    results["ma_adjust_dca"]["total_value_series"] = total_val
+                    pv = total_val.values
+                    if len(pv) > 1:
+                        dr = np.diff(pv) / pv[:-1]
+                        results["ma_adjust_dca"]["sharpe_ratio"] = round(float(sharpe_ratio(dr)), 4)
+                        results["ma_adjust_dca"]["max_drawdown_pct"] = round(float(max_drawdown(pv)), 2)
+                        results["ma_adjust_dca"]["total_return_pct"] = round(float((pv[-1] - capital) / capital * 100), 2)
+                        results["ma_adjust_dca"]["final_value"] = round(float(pv[-1]), 2)
+            except Exception:
+                results["ma_adjust_dca"] = None
+
+        return results
 
     def save(self, path: str):
         import torch
