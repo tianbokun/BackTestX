@@ -46,9 +46,7 @@ def render_hierarchical_rl(end_date, adjust):
         st.error("尚未添加任何 ETF 代码。请先在「📋 代码管理」中添加。")
         st.stop()
 
-    all_tags = sorted({t for s in all_registered_etfs for t in s.get("tags", [])})
-    selected_tags = st.sidebar.multiselect("标签过滤", all_tags, default=all_tags, key="hrl_tag_filter")
-    filtered_etfs = [s for s in all_registered_etfs if any(t in s.get("tags", []) for t in selected_tags)]
+    filtered_etfs = all_registered_etfs
 
     selected_symbols = []
     with st.sidebar.expander("📋 ETF 池选择", expanded=True):
