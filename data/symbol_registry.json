@@ -1,35 +1,4 @@
 {
   "version": 1,
-  "symbols": [
-    {
-      "symbol": "588000",
-      "name": "科创50ETF",
-      "asset_type": "etf",
-      "start_date": "20200101",
-      "tags": [
-        "宽基ETF"
-      ],
-      "notes": ""
-    },
-    {
-      "symbol": "510880",
-      "name": "红利ETF",
-      "asset_type": "etf",
-      "start_date": "20200101",
-      "tags": [
-        "宽基ETF"
-      ],
-      "notes": ""
-    },
-    {
-      "symbol": "159915",
-      "name": "创业板ETF",
-      "asset_type": "etf",
-      "start_date": "20200101",
-      "tags": [
-        "宽基ETF"
-      ],
-      "notes": ""
-    }
-  ]
+  "symbols": []
 }

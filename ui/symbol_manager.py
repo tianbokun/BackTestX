@@ -1,18 +1,10 @@
 import streamlit as st
 import pandas as pd
 
-from data.symbol_registry import SymbolRegistry, migrate
-
-
-def _run_migration():
-    added = migrate()
-    if added:
-        st.toast(f"已导入 {added} 个默认 ETF 到代码注册表")
+from data.symbol_registry import SymbolRegistry
 
 
 def render_symbol_manager():
-    _run_migration()
-
     st.title("📋 代码管理")
     st.markdown("""
     <div style="background:#f0f4ff;border-radius:10px;padding:1rem 1.25rem;margin-bottom:1.5rem;font-size:0.9rem;color:#1e293b">

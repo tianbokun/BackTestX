@@ -5,24 +5,6 @@ from datetime import date
 
 REGISTRY_PATH = Path(__file__).parent / "symbol_registry.json"
 
-_DEFAULT_SYMBOLS = [
-    {"symbol": "515790", "name": "光伏ETF", "asset_type": "etf", "tags": ["主题ETF", "新能源"]},
-    {"symbol": "159790", "name": "碳中和ETF", "asset_type": "etf", "tags": ["主题ETF", "新能源"]},
-    {"symbol": "512660", "name": "军工ETF", "asset_type": "etf", "tags": ["主题ETF"]},
-    {"symbol": "588000", "name": "科创50ETF", "asset_type": "etf", "tags": ["宽基ETF"]},
-    {"symbol": "515070", "name": "AI智能ETF", "asset_type": "etf", "tags": ["主题ETF", "科技"]},
-    {"symbol": "515030", "name": "新能源车ETF", "asset_type": "etf", "tags": ["主题ETF", "新能源"]},
-    {"symbol": "512480", "name": "半导体ETF", "asset_type": "etf", "tags": ["主题ETF", "科技"]},
-    {"symbol": "159995", "name": "芯片ETF", "asset_type": "etf", "tags": ["主题ETF", "科技"]},
-    {"symbol": "515050", "name": "5GETF", "asset_type": "etf", "tags": ["主题ETF", "科技"]},
-    {"symbol": "159819", "name": "人工智能ETF", "asset_type": "etf", "tags": ["主题ETF", "科技"]},
-    {"symbol": "515900", "name": "央企创新ETF", "asset_type": "etf", "tags": ["主题ETF"]},
-    {"symbol": "512010", "name": "医药ETF", "asset_type": "etf", "tags": ["主题ETF"]},
-    {"symbol": "512580", "name": "环保ETF", "asset_type": "etf", "tags": ["主题ETF", "新能源"]},
-    {"symbol": "510880", "name": "红利ETF", "asset_type": "etf", "tags": ["宽基ETF"]},
-    {"symbol": "159915", "name": "创业板ETF", "asset_type": "etf", "tags": ["宽基ETF"]},
-]
-
 
 def _load() -> dict:
     if REGISTRY_PATH.exists():
@@ -35,23 +17,6 @@ def _save(registry: dict):
     registry["version"] = 1
     with open(REGISTRY_PATH, "w", encoding="utf-8") as f:
         json.dump(registry, f, ensure_ascii=False, indent=2)
-
-
-def migrate():
-    registry = _load()
-    if registry["symbols"]:
-        return 0
-    for ds in _DEFAULT_SYMBOLS:
-        registry["symbols"].append({
-            "symbol": ds["symbol"],
-            "name": ds["name"],
-            "asset_type": ds["asset_type"],
-            "start_date": "20200101",
-            "tags": list(ds["tags"]),
-            "notes": "",
-        })
-    _save(registry)
-    return len(_DEFAULT_SYMBOLS)
 
 
 class SymbolRegistry:
