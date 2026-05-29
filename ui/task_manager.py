@@ -176,12 +176,41 @@ def _render_detail(task: dict, mgr: TaskManager):
         pdata = mgr.get_progress_data(tid)
         if pdata and len(pdata) > 1:
             df = pd.DataFrame(pdata, columns=["ep", "value"])
+            is_rl = task["type"] == "RL训练"
+            ylabel = "Loss" if is_rl else "Reward"
+            best_idx = df["value"].idxmin() if is_rl else df["value"].idxmax()
+            best_val = df.loc[best_idx, "value"]
+            best_ep = df.loc[best_idx, "ep"]
+
+            window = max(5, len(df) // 10)
+            df["trend"] = df["value"].rolling(window=window, min_periods=1).mean()
+
             fig = go.Figure()
-            ylabel = "Loss" if task["type"] == "RL训练" else "Reward"
-            fig.add_trace(go.Scatter(x=df["ep"], y=df["value"], mode="lines", name=ylabel))
+            fig.add_trace(go.Scatter(
+                x=df["ep"], y=df["value"],
+                mode="lines", name="原始",
+                line=dict(color="#94a3b8", width=1),
+                opacity=0.5,
+            ))
+            fig.add_trace(go.Scatter(
+                x=df["ep"], y=df["trend"],
+                mode="lines", name="趋势",
+                line=dict(color="#ef4444", width=2.5),
+            ))
+            fig.add_trace(go.Scatter(
+                x=[best_ep], y=[best_val],
+                mode="markers+text",
+                name="最优",
+                marker=dict(color="#22c55e", size=12, symbol="star"),
+                text=[f"<b>{ylabel} {best_val:.4f}</b>"],
+                textposition="top center",
+                textfont=dict(color="#22c55e", size=12),
+            ))
             fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10),
-                              xaxis_title="Episode", yaxis_title=ylabel)
+                              xaxis_title="Episode", yaxis_title=ylabel,
+                              showlegend=True)
             st.plotly_chart(fig, width='stretch')
+            st.caption(f"🏆 最优 {ylabel}: 第 {best_ep} episode, {ylabel}={best_val:.4f}")
 
         time.sleep(1)
         st.rerun()
