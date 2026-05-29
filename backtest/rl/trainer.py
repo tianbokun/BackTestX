@@ -43,6 +43,7 @@ def train_dqn(
     stamp_duty: float = 0.001,
     initial_capital: float = 1.0,
     progress_callback=None,
+    cancel_check=None,
 ) -> tuple:
     if feature_groups is None:
         feature_groups = DEFAULT_FEATURE_GROUPS
@@ -78,7 +79,11 @@ def train_dqn(
         target_update=target_update,
     )
 
+    if cancel_check is None:
+        cancel_check = lambda: False
     for ep in range(n_episodes):
+        if cancel_check():
+            break
         env = StockTradingEnv(
             state_vectors, close, dates,
             initial_capital=initial_capital,

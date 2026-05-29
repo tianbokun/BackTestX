@@ -11,12 +11,13 @@ from backtest.rl.hierarchical_trainer import (
     _align_dates,
     DEFAULT_ETF_POOL,
 )
+from backtest.rl.task_manager import TaskManager, TaskStatus
 from data.symbol_registry import SymbolRegistry
 
 
 def _init_session_keys():
     for k in ("hrl_trainer", "hrl_train_result", "hrl_val_result", "hrl_test_result",
-              "hrl_capital", "hrl_test_dates", "hrl_benchmarks"):
+              "hrl_capital", "hrl_test_dates", "hrl_benchmarks", "hrl_loaded_task_id"):
         if k not in st.session_state:
             st.session_state[k] = None
 
@@ -24,6 +25,94 @@ def _init_session_keys():
 def _etf_name(sym: str) -> str:
     entry = SymbolRegistry.get(sym)
     return entry["name"] if entry else sym
+
+
+def _hrl_train_task(params, task_id=None, cancel_check=None):
+    import numpy as np
+    mgr = TaskManager()
+
+    def progress(ep, total, reward):
+        mgr.update_progress(task_id, (ep + 1) / total, progress_data=(ep, reward))
+
+    p = params
+    trainer = HierarchicalTrainer(
+        etf_data=p["train_etf_data"],
+        aligned_dates=p["train_dates"],
+        n_episodes=p["n_episodes"],
+        ppo_lr=p["ppo_lr"], ppo_gamma=p["ppo_gamma"],
+        clip_epsilon=p["clip_epsilon"], entropy_beta=p["entropy_beta"],
+        gae_lambda=p["gae_lambda"], ppo_hidden=p["ppo_hidden"],
+        ppo_epochs=p["ppo_epochs"], ppo_update_freq=p["ppo_update_freq"],
+        dqn_lr=p["dqn_lr"], dqn_gamma=p["dqn_gamma"],
+        dqn_hidden=p["dqn_hidden"],
+        dqn_epsilon_start=p["dqn_epsilon_start"],
+        dqn_epsilon_end=p["dqn_epsilon_end"],
+        dqn_epsilon_decay=p["dqn_epsilon_decay"],
+        dqn_buffer_capacity=p["dqn_buffer_capacity"],
+        dqn_batch_size=p["dqn_batch_size"],
+        commission_rate=p["commission_rate"],
+        min_commission=p["min_commission"],
+        stamp_duty=p["stamp_duty"],
+        initial_capital=p["initial_capital"],
+        trade_fraction=p["trade_fraction"],
+    )
+    train_result = trainer.train(cancel_check=cancel_check, progress_callback=progress)
+    if cancel_check():
+        return None
+
+    test_etf_data = {}
+    for sym, df in p["all_etf_data"].items():
+        test_etf_data[sym] = df.loc[pd.Timestamp(p["test_start"]):pd.Timestamp(p["test_end"])]
+
+    test_trainer = HierarchicalTrainer(
+        etf_data=test_etf_data,
+        aligned_dates=p["test_dates"],
+        n_episodes=1,
+        ppo_lr=p["ppo_lr"], ppo_gamma=p["ppo_gamma"],
+        clip_epsilon=p["clip_epsilon"], entropy_beta=p["entropy_beta"],
+        gae_lambda=p["gae_lambda"], ppo_hidden=p["ppo_hidden"],
+        ppo_epochs=p["ppo_epochs"], ppo_update_freq=p["ppo_update_freq"],
+        dqn_lr=p["dqn_lr"], dqn_gamma=p["dqn_gamma"],
+        dqn_hidden=p["dqn_hidden"],
+        dqn_epsilon_start=p["dqn_epsilon_start"],
+        dqn_epsilon_end=p["dqn_epsilon_end"],
+        dqn_epsilon_decay=p["dqn_epsilon_decay"],
+        dqn_buffer_capacity=p["dqn_buffer_capacity"],
+        dqn_batch_size=p["dqn_batch_size"],
+        commission_rate=p["commission_rate"],
+        min_commission=p["min_commission"],
+        stamp_duty=p["stamp_duty"],
+        initial_capital=p["initial_capital"],
+        trade_fraction=p["trade_fraction"],
+    )
+    test_trainer.ppo = trainer.ppo
+    test_trainer.dqn = trainer.dqn
+    test_result = test_trainer.evaluate()
+    benchmarks = test_trainer.compute_benchmarks()
+
+    return {
+        "train_result": train_result,
+        "test_result": test_result,
+        "benchmarks": benchmarks,
+        "capital": p["initial_capital"],
+        "test_dates": p["test_dates"],
+        "selected_symbols": p["selected_symbols"],
+    }
+
+
+def _load_task_result(task_id: str):
+    mgr = TaskManager()
+    result = mgr.get_result(task_id)
+    if result is None:
+        st.warning("结果尚未就绪或已被清除")
+        return
+    st.session_state.hlr_loaded_task_id = task_id
+    st.session_state.hrl_test_result = result["test_result"]
+    st.session_state.hrl_benchmarks = result["benchmarks"]
+    st.session_state.hrl_capital = result["capital"]
+    st.session_state.hrl_test_dates = result["test_dates"]
+    st.session_state.hrl_selected_symbols = result.get("selected_symbols", [])
+    st.session_state.mode_tab = "🧠 分层RL"
 
 
 def render_hierarchical_rl(end_date, adjust):
@@ -35,7 +124,8 @@ def render_hierarchical_rl(end_date, adjust):
     <div style="background:#f0f4ff;border-radius:10px;padding:1rem 1.25rem;margin-bottom:1.5rem;font-size:0.9rem;color:#1e293b">
     <b>架构说明：</b><br>
     <b>上层 (PPO)</b> — 择时：根据市场状态决定总仓位比例 (0%~100%)<br>
-    <b>下层 (DQN)</b> — 选股：在 ETF 池中独立决策每支的买入/持有/卖出，受 PPO 仓位约束
+    <b>下层 (DQN)</b> — 选股：在 ETF 池中独立决策每支的买入/持有/卖出，受 PPO 仓位约束<br><br>
+    🚀 训练在后台执行（最多 3 个并发），提交后可到「📋 训练任务」查看进度
     </div>
     """, unsafe_allow_html=True)
 
@@ -128,113 +218,80 @@ def render_hierarchical_rl(end_date, adjust):
         trade_fraction = st.text_input("每笔交易比例", value="0.2", key="hrl_trade_fraction",
                                        help="单支ETF每次最多交易占总资金的比例")
 
-    run_btn = st.sidebar.button("🚀 开始分层训练", type="primary", width='stretch', key="hrl_run_btn")
+    run_btn = st.sidebar.button("🚀 后台训练", type="primary", key="hrl_run_btn")
+
+    # ── Parse hyperparams ──
+    try:
+        ppo_lr_f = float(ppo_lr)
+        ppo_gamma_f = float(ppo_gamma)
+        ppo_clip_f = float(ppo_clip)
+        ppo_entropy_f = float(ppo_entropy)
+        gae_lambda_f = float(gae_lambda)
+        dqn_lr_f = float(dqn_lr)
+        dqn_gamma_f = float(dqn_gamma)
+        trade_fraction_f = float(trade_fraction)
+        dqn_epsilon_start_f = float(dqn_epsilon_start)
+        dqn_epsilon_end_f = float(dqn_epsilon_end)
+    except ValueError:
+        st.error("超参数格式错误")
+        st.stop()
 
     total_dates = aligned_dates
+    train_dates = total_dates[:train_end_i + 1]
+    test_dates = total_dates[val_end_i + 1:]
 
+    # ── Submit background task ──
     if run_btn:
-        st.markdown("---")
-        st.subheader("📊 分层训练与回测")
-
-        progress_bar = st.progress(0)
-        reward_chart = st.empty()
-        ep_rewards = []
-
-        try:
-            ppo_lr_f = float(ppo_lr)
-            ppo_gamma_f = float(ppo_gamma)
-            ppo_clip_f = float(ppo_clip)
-            ppo_entropy_f = float(ppo_entropy)
-            gae_lambda_f = float(gae_lambda)
-            dqn_lr_f = float(dqn_lr)
-            dqn_gamma_f = float(dqn_gamma)
-            trade_fraction_f = float(trade_fraction)
-        except ValueError:
-            st.error("超参数格式错误")
-            st.stop()
-
-        def _progress(ep, total, reward):
-            progress_bar.progress((ep + 1) / total)
-            ep_rewards.append((ep, reward))
-            if len(ep_rewards) > 1:
-                rdf = pd.DataFrame(ep_rewards, columns=["ep", "reward"])
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=rdf["ep"], y=rdf["reward"], mode="lines", name="Episode Reward"))
-                fig.update_layout(height=250, margin=dict(l=10, r=10, t=10, b=10),
-                                  xaxis_title="Episode", yaxis_title="Reward")
-                reward_chart.plotly_chart(fig, width='stretch')
-
-        train_dates = total_dates[:train_end_i + 1]
         train_etf_data = {}
         for sym, df in etf_data.items():
             train_etf_data[sym] = df.loc[:pd.Timestamp(train_end)]
 
-        with st.spinner("正在分层训练 (PPO+DQN)..."):
-            trainer = HierarchicalTrainer(
-                etf_data=train_etf_data,
-                aligned_dates=train_dates,
-                n_episodes=n_episodes,
-                ppo_lr=ppo_lr_f, ppo_gamma=ppo_gamma_f,
-                clip_epsilon=ppo_clip_f, entropy_beta=ppo_entropy_f,
-                gae_lambda=gae_lambda_f, ppo_hidden=int(ppo_hidden),
-                ppo_epochs=int(ppo_epochs), ppo_update_freq=int(ppo_update_freq),
-                dqn_lr=dqn_lr_f, dqn_gamma=dqn_gamma_f,
-                dqn_hidden=int(dqn_hidden),
-                dqn_epsilon_start=float(dqn_epsilon_start),
-                dqn_epsilon_end=float(dqn_epsilon_end),
-                dqn_epsilon_decay=int(dqn_epsilon_decay),
-                dqn_buffer_capacity=int(dqn_buffer),
-                dqn_batch_size=int(dqn_batch),
-                commission_rate=float(hrl_commission),
-                min_commission=float(hrl_min_commission),
-                stamp_duty=float(hrl_stamp_duty),
-                initial_capital=float(hrl_capital),
-                trade_fraction=trade_fraction_f,
-            )
-            train_result = trainer.train(progress_callback=_progress)
+        params = dict(
+            train_etf_data=train_etf_data,
+            train_dates=train_dates,
+            all_etf_data=etf_data,
+            test_dates=test_dates,
+            test_start=test_start,
+            test_end=test_end,
+            selected_symbols=selected_symbols,
+            n_episodes=int(n_episodes),
+            ppo_lr=ppo_lr_f, ppo_gamma=ppo_gamma_f,
+            clip_epsilon=ppo_clip_f, entropy_beta=ppo_entropy_f,
+            gae_lambda=gae_lambda_f, ppo_hidden=int(ppo_hidden),
+            ppo_epochs=int(ppo_epochs), ppo_update_freq=int(ppo_update_freq),
+            dqn_lr=dqn_lr_f, dqn_gamma=dqn_gamma_f,
+            dqn_hidden=int(dqn_hidden),
+            dqn_epsilon_start=dqn_epsilon_start_f,
+            dqn_epsilon_end=dqn_epsilon_end_f,
+            dqn_epsilon_decay=int(dqn_epsilon_decay),
+            dqn_buffer_capacity=int(dqn_buffer),
+            dqn_batch_size=int(dqn_batch),
+            commission_rate=float(hrl_commission),
+            min_commission=float(hrl_min_commission),
+            stamp_duty=float(hrl_stamp_duty),
+            initial_capital=float(hrl_capital),
+            trade_fraction=trade_fraction_f,
+        )
 
-        test_dates = total_dates[val_end_i + 1:]
-        test_etf_data = {}
-        for sym, df in etf_data.items():
-            test_etf_data[sym] = df.loc[pd.Timestamp(test_start):pd.Timestamp(test_end)]
+        mgr = TaskManager()
+        task_id = mgr.submit("HRL训练", params, _hrl_train_task, args=(params,))
+        st.success(f"✅ 训练任务已提交 (ID: {task_id[:8]}...) 可到「📋 训练任务」查看进度")
 
-        if test_etf_data and test_dates:
-            test_trainer = HierarchicalTrainer(
-                etf_data=test_etf_data,
-                aligned_dates=test_dates,
-                n_episodes=1,
-                ppo_lr=ppo_lr_f, ppo_gamma=ppo_gamma_f,
-                clip_epsilon=ppo_clip_f, entropy_beta=ppo_entropy_f,
-                gae_lambda=gae_lambda_f, ppo_hidden=int(ppo_hidden),
-                ppo_epochs=int(ppo_epochs), ppo_update_freq=int(ppo_update_freq),
-                dqn_lr=dqn_lr_f, dqn_gamma=dqn_gamma_f,
-                dqn_hidden=int(dqn_hidden),
-                dqn_epsilon_start=float(dqn_epsilon_start),
-                dqn_epsilon_end=float(dqn_epsilon_end),
-                dqn_epsilon_decay=int(dqn_epsilon_decay),
-                dqn_buffer_capacity=int(dqn_buffer),
-                dqn_batch_size=int(dqn_batch),
-                commission_rate=float(hrl_commission),
-                min_commission=float(hrl_min_commission),
-                stamp_duty=float(hrl_stamp_duty),
-                initial_capital=float(hrl_capital),
-                trade_fraction=trade_fraction_f,
-            )
-            test_trainer.ppo = trainer.ppo
-            test_trainer.dqn = trainer.dqn
-            test_result = test_trainer.evaluate()
+    # ── Load result from completed task ──
+    loaded_task_id = st.session_state.get("hrl_loaded_task_id")
+    if loaded_task_id:
+        mgr = TaskManager()
+        task = mgr.get_task(loaded_task_id)
+        if task and task["status"] == TaskStatus.COMPLETED.value:
+            result = mgr.get_result(loaded_task_id)
+            if result is not None:
+                st.session_state.hrl_test_result = result["test_result"]
+                st.session_state.hrl_benchmarks = result["benchmarks"]
+                st.session_state.hrl_capital = result["capital"]
+                st.session_state.hrl_test_dates = result["test_dates"]
+                st.session_state.hrl_selected_symbols = result.get("selected_symbols", [])
 
-            st.session_state.hrl_test_result = test_result
-            st.session_state.hrl_test_dates = test_dates
-
-            benchmarks = test_trainer.compute_benchmarks()
-            st.session_state.hrl_benchmarks = benchmarks
-
-        st.session_state.hrl_trainer = trainer
-        st.session_state.hrl_train_result = train_result
-        st.session_state.hrl_capital = float(hrl_capital)
-        st.success("✅ 训练完成！")
-
+    # ── Render results ──
     test_result = st.session_state.hrl_test_result
     capital = st.session_state.hrl_capital or 100000.0
 
@@ -378,4 +435,4 @@ def render_hierarchical_rl(end_date, adjust):
                 st.success(f"✅ 模型已保存: {save_path}")
     else:
         if not run_btn:
-            st.info("👈 在侧边栏设置好参数后，点击「开始分层训练」")
+            st.info("👈 在侧边栏设置好参数后，点击「后台训练」")

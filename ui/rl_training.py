@@ -15,12 +15,47 @@ from backtest.rl.trainer import (
 from backtest.rl.dqn_agent import DQNAgent
 from backtest.rl.feature_engineer import FEATURE_GROUPS, DEFAULT_FEATURE_GROUPS
 from data.symbol_registry import SymbolRegistry
+from backtest.rl.task_manager import TaskManager, TaskStatus
 from ui.rl_signal import render_rl_signal
 
 # ── Threading globals for cancelable HP search ──
 _hp_cancel_event = threading.Event()
 _hp_output: dict = {}
 _hp_progress: dict = {}
+
+
+def _rl_train_task(params, task_id=None, cancel_check=None):
+    from backtest.rl.trainer import train_dqn, evaluate, run_bh_baseline
+    mgr = TaskManager()
+
+    def progress(ep, total, loss):
+        mgr.update_progress(task_id, (ep + 1) / total, progress_data=(ep, loss))
+
+    agent, _ = train_dqn(
+        params["df_train"],
+        system_version=params["system_version"],
+        feature_groups=params["feature_groups"],
+        progress_callback=progress,
+        cancel_check=cancel_check,
+        **params["dqn_params"],
+        **params["fee_params"],
+    )
+    if cancel_check():
+        return None
+
+    result_dqn = evaluate(agent, params["df_test"],
+                          system_version=params["system_version"],
+                          feature_groups=params["feature_groups"],
+                          **params["fee_params"])
+    result_bh = run_bh_baseline(params["df_test"],
+                                initial_capital=params["fee_params"]["initial_capital"])
+
+    return {
+        "agent": agent,
+        "result_dqn": result_dqn,
+        "result_bh": result_bh,
+        "meta": params["meta"],
+    }
 
 
 def render_rl_training(end_date, adjust):
@@ -414,30 +449,10 @@ def render_rl_training(end_date, adjust):
         with save_col2:
             st.caption("保存超参搜索得到的最优模型到磁盘，之后可在侧边栏加载使用")
 
-    # ── 训练 ──
+    # ── 训练 (后台任务) ──
     if run_btn:
-        st.markdown("---")
-        st.subheader("📊 训练与测试")
-
-        progress_bar = st.progress(0)
-        loss_chart = st.empty()
-        loss_data = []
-
-        def _progress(ep, total, loss):
-            progress_bar.progress((ep + 1) / total)
-            if loss > 0:
-                loss_data.append((ep, loss))
-            if len(loss_data) > 1:
-                import plotly.graph_objects as go
-                ldf = pd.DataFrame(loss_data, columns=["ep", "loss"])
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=ldf["ep"], y=ldf["loss"], mode="lines", name="Loss"))
-                fig.update_layout(height=250, margin=dict(l=10, r=10, t=10, b=10),
-                                  xaxis_title="Step", yaxis_title="Loss")
-                loss_chart.plotly_chart(fig, width='stretch')
-
         try:
-            params = {
+            dqn_params = {
                 "n_episodes": int(n_episodes), "batch_size": int(batch_size),
                 "lr": float(lr), "gamma": float(gamma), "hidden": int(hidden),
                 "epsilon_start": float(epsilon_start), "epsilon_end": float(epsilon_end),
@@ -448,29 +463,37 @@ def render_rl_training(end_date, adjust):
             st.error("超参数格式错误，请检查数字格式")
             st.stop()
 
-        with st.spinner("正在训练 DQN 智能体..."):
-            agent, _ = train_dqn(
-                df_train, system_version=system_version,
-                feature_groups=selected_groups,
-                progress_callback=_progress, **params, **fee_params,
-            )
-
-        with st.spinner("正在回测..."):
-            result_dqn = evaluate(agent, df_test, system_version=system_version,
-                                  feature_groups=selected_groups, **fee_params)
-            result_bh = run_bh_baseline(df_test, initial_capital=rl_capital_val)
-
-        # 存入 session_state 持久化
-        st.session_state.rl_trained_agent = agent
-        st.session_state.rl_dqn_result = result_dqn
-        st.session_state.rl_bh_result = result_bh
-        st.session_state.rl_train_meta = {
-            "symbol": symbol, "system_version": system_version,
-            "train_start": str(train_start), "train_end": str(train_end),
-            "df_test_index": df_test.index,
+        task_params = {
+            "df_train": df_train,
+            "df_test": df_test,
+            "system_version": system_version,
+            "feature_groups": list(selected_groups),
+            "dqn_params": dqn_params,
+            "fee_params": dict(fee_params),
+            "meta": {
+                "symbol": symbol,
+                "system_version": system_version,
+                "train_start": str(train_start),
+                "train_end": str(train_end),
+                "df_test_index": df_test.index,
+            },
         }
-        st.session_state.rl_model_just_saved = True
-        st.success("✅ 训练完成！")
+        mgr = TaskManager()
+        task_id = mgr.submit("RL训练", task_params, _rl_train_task, args=(task_params,))
+        st.success(f"✅ 训练任务已提交 (ID: {task_id[:8]}...) 可到「📋 训练任务」查看进度")
+
+    # ── 从已完成任务加载结果 ──
+    rl_loaded_task_id = st.session_state.get("rl_loaded_task_id")
+    if rl_loaded_task_id:
+        mgr = TaskManager()
+        task = mgr.get_task(rl_loaded_task_id)
+        if task and task["status"] == TaskStatus.COMPLETED.value:
+            result = mgr.get_result(rl_loaded_task_id)
+            if result is not None:
+                st.session_state.rl_trained_agent = result["agent"]
+                st.session_state.rl_dqn_result = result["result_dqn"]
+                st.session_state.rl_bh_result = result["result_bh"]
+                st.session_state.rl_train_meta = result["meta"]
 
     # ── 展示训练结果 + 保存按钮 (在 run_btn 外部, 持久化) ──
     if st.session_state.rl_trained_agent is not None:

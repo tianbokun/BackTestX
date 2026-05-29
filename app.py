@@ -20,6 +20,7 @@ from ui.grid_search import render_grid_search
 from ui.rl_training import render_rl_training
 from ui.hierarchical_rl import render_hierarchical_rl
 from ui.symbol_manager import render_symbol_manager
+from ui.task_manager import render_task_manager
 
 
 
@@ -361,7 +362,7 @@ for key in ("rl_model_just_saved",):
 
 mode = st.radio(
     "_mode",
-    ["📊 定投回测", "🎯 网格搜索", "🤖 强化学习", "🧠 分层RL", "📋 代码管理"],
+    ["📊 定投回测", "🎯 网格搜索", "🤖 强化学习", "🧠 分层RL", "📋 训练任务", "📋 代码管理"],
     horizontal=True,
     label_visibility="collapsed",
     key="mode_tab",
@@ -459,6 +460,8 @@ elif mode.startswith("🤖"):
     render_rl_training(end_date, adjust)
 elif mode.startswith("🧠"):
     render_hierarchical_rl(end_date, adjust)
+elif mode == "📋 训练任务":
+    render_task_manager()
 elif mode.startswith("📋"):
     render_symbol_manager()
 

@@ -137,8 +137,12 @@ class HierarchicalTrainer:
         self.dqn_losses = []
         self.episode_rewards = []
 
-    def train(self, progress_callback=None):
+    def train(self, progress_callback=None, cancel_check=None):
+        if cancel_check is None:
+            cancel_check = lambda: False
         for ep in range(self.n_episodes):
+            if cancel_check():
+                break
             self.env = MultiAssetTradingEnv(
                 etf_data=self.etf_data,
                 aligned_dates=self.aligned_dates,
