@@ -230,11 +230,12 @@ class MultiAssetTradingEnv:
             max_cost = cost / (1 + self.cr)
             commission = max(max_cost * self.cr, self.min_c)
             total = max_cost + commission
-            if total <= self.cash and max_cost > 0:
-                shares_bought = max_cost / price
-                self.cash -= total
-                self.positions[sym] += shares_bought
-                self._last_trade_cost += commission
+            if total <= self.cash + 1e-9 and max_cost > 0:
+                    total = min(total, self.cash)
+                    shares_bought = max_cost / price
+                    self.cash -= total
+                    self.positions[sym] += shares_bought
+                    self._last_trade_cost += commission
 
     def _calc_reward(self):
         n = min(self.reward_window, self.t)

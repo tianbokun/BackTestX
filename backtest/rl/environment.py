@@ -57,7 +57,8 @@ class StockTradingEnv:
                     cost = max_cost
                 shares_bought = cost / price
                 total = cost + commission
-                if total <= self.cash and cost > 0:
+                if total <= self.cash + 1e-9 and cost > 0:
+                    total = min(total, self.cash)
                     self.cash -= total
                     self.shares += shares_bought
                     self._last_trade_cost = commission
