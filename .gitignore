@@ -36,3 +36,6 @@ Thumbs.db
 *.orig
 *.bak
 tasks_registry.json
+
+# User data
+data/symbol_registry.json
