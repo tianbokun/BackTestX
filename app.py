@@ -5,7 +5,6 @@ Streamlit Web UI
 """
 
 import sys
-import importlib
 from pathlib import Path
 from datetime import date
 
@@ -15,41 +14,13 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 
 from data_fetcher import ASSET_TYPE_CONFIG, get_price_series
-
-import ui._helpers as _helpers_mod
-import ui.dca_backtest as dca_mod
-import ui.grid_search as grid_mod
-import ui.rl_training as rl_training_mod
-import ui.hierarchical_rl as hrl_mod
-import ui.symbol_manager as sym_mod
-import ui.task_manager as task_mod
-
-
-# ── Hot-reload: 开发时改子模块后无需重启 Streamlit ──
-def _hot_reload():
-    for name in (
-        "backtest.rl.environment",
-        "backtest.rl.feature_engineer",
-        "backtest.rl.dqn_agent",
-        "backtest.rl.metrics",
-        "backtest.rl.task_manager",
-        "backtest.rl.multi_asset_env",
-        "backtest.rl.trainer",
-        "backtest.rl.hierarchical_trainer",
-        "data_fetcher",
-        "ui._helpers",
-        "ui.dca_backtest",
-        "ui.grid_search",
-        "ui.symbol_manager",
-        "ui.task_manager",
-        "ui.rl_training",
-        "ui.hierarchical_rl",
-    ):
-        mod = sys.modules.get(name)
-        if mod is not None:
-            importlib.reload(mod)
-
-_hot_reload()
+from ui._helpers import cached_fetch
+from ui.dca_backtest import render_dca_backtest
+from ui.grid_search import render_grid_search
+from ui.rl_training import render_rl_training
+from ui.hierarchical_rl import render_hierarchical_rl
+from ui.symbol_manager import render_symbol_manager
+from ui.task_manager import render_task_manager
 
 
 
@@ -335,9 +306,6 @@ def _inject_global_styles():
         padding: 1.5rem 0 0.5rem;
     }
 
-    /* ── Hide Streamlit status widget (running-man + Stop) ── */
-    [data-testid="stStatusWidget"] { display: none; }
-
     /* ── Spinner ── */
     .stSpinner {
         border-radius: 12px;
@@ -457,7 +425,7 @@ def _fetch_data():
     try:
         start_str = start_date.strftime("%Y%m%d")
         end_str = end_date.strftime("%Y%m%d")
-        df = _helpers_mod.cached_fetch(symbol, asset_type, start_str, end_str, adjust)
+        df = cached_fetch(symbol, asset_type, start_str, end_str, adjust)
     except Exception as e:
         st.error(f"数据获取失败: {e}")
         st.stop()
@@ -485,17 +453,17 @@ if needs_sidebar_symbol:
 # ══════════════════════════════════════════════════════════════
 
 if mode.startswith("📊"):
-    dca_mod.render_dca_backtest(price_series, start_date, end_date)
+    render_dca_backtest(price_series, start_date, end_date)
 elif mode.startswith("🎯"):
-    grid_mod.render_grid_search(price_series, start_date, end_date, symbol)
+    render_grid_search(price_series, start_date, end_date, symbol)
 elif mode.startswith("🤖"):
-    rl_training_mod.render_rl_training(end_date, adjust)
+    render_rl_training(end_date, adjust)
 elif mode.startswith("🧠"):
-    hrl_mod.render_hierarchical_rl(end_date, adjust)
+    render_hierarchical_rl(end_date, adjust)
 elif mode == "📋 训练任务":
-    task_mod.render_task_manager()
+    render_task_manager()
 elif mode.startswith("📋"):
-    sym_mod.render_symbol_manager()
+    render_symbol_manager()
 
 
 # ── 页脚 ──
