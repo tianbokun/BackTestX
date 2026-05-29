@@ -306,6 +306,9 @@ def _inject_global_styles():
         padding: 1.5rem 0 0.5rem;
     }
 
+    /* ── Hide Streamlit status widget (running-man + Stop) ── */
+    [data-testid="stStatusWidget"] { display: none; }
+
     /* ── Spinner ── */
     .stSpinner {
         border-radius: 12px;
