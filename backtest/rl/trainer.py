@@ -42,6 +42,9 @@ def train_dqn(
     min_commission: float = 5.0,
     stamp_duty: float = 0.001,
     initial_capital: float = 1.0,
+    reward_window: int = 63,
+    vol_penalty_coef: float = 0.1,
+    dd_penalty_coef: float = 0.5,
     progress_callback=None,
     cancel_check=None,
 ) -> tuple:
@@ -90,6 +93,9 @@ def train_dqn(
             commission_rate=commission_rate,
             min_commission=min_commission,
             stamp_duty=stamp_duty,
+            reward_window=reward_window,
+            vol_penalty_coef=vol_penalty_coef,
+            dd_penalty_coef=dd_penalty_coef,
         )
         state = env.reset()
         done = False
@@ -252,6 +258,9 @@ def hyperparam_search(
     min_commission: float = 5.0,
     stamp_duty: float = 0.001,
     initial_capital: float = 1.0,
+    reward_window: int = 63,
+    vol_penalty_coef: float = 0.1,
+    dd_penalty_coef: float = 0.5,
     n_folds: int = 3,
     progress_callback=None,
     combo_callback=None,
@@ -304,6 +313,9 @@ def hyperparam_search(
                 "min_commission": min_commission,
                 "stamp_duty": stamp_duty,
                 "initial_capital": initial_capital,
+                "reward_window": reward_window,
+                "vol_penalty_coef": vol_penalty_coef,
+                "dd_penalty_coef": dd_penalty_coef,
             }
             try:
                 agent, _ = train_dqn(df_fold_train, system_version, feature_groups, **params)

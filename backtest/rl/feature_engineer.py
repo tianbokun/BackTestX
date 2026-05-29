@@ -64,6 +64,20 @@ FEATURE_GROUPS = {
         "default": False,
         "help": "能量潮 OBV + 成交额",
     },
+    "long_trend": {
+        "label": "长期趋势 (MA180/250)",
+        "columns": ["close_ma180_ratio", "close_ma250_ratio"],
+        "raw_columns": [],
+        "default": False,
+        "help": "价格偏离180/250日均线程度，极端值预示回归/反转风险",
+    },
+    "crash_risk": {
+        "label": "崩盘风险预警",
+        "columns": ["volume_ma_ratio", "ATR_ma_ratio", "BB_width"],
+        "raw_columns": [],
+        "default": False,
+        "help": "成交量异常放大、波动率扩张、布林带扩张 — 顶部反转预警",
+    },
 }
 
 DEFAULT_FEATURE_GROUPS = [k for k, v in FEATURE_GROUPS.items() if v.get("default", False)]
@@ -187,11 +201,15 @@ def compute_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["MA10"] = _ma(close, 10)
     out["MA30"] = _ma(close, 30)
     out["MA120"] = _ma(close, 120)
+    out["MA180"] = _ma(close, 180)
+    out["MA250"] = _ma(close, 250)
     out["EMA30"] = _ema(close, 30)
 
     # ── Price position ──
     ma20 = _ma(close, 20)
     out["close_ma20_ratio"] = close / np.maximum(ma20, 1e-10) - 1.0
+    out["close_ma180_ratio"] = close / np.maximum(out["MA180"].values, 1e-10) - 1.0
+    out["close_ma250_ratio"] = close / np.maximum(out["MA250"].values, 1e-10) - 1.0
 
     # ── Bollinger Bands ──
     bb_mid, bb_up, bb_low = _bbands(close)
@@ -199,6 +217,7 @@ def compute_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["BB_up"] = bb_up
     out["BB_low"] = bb_low
     out["percent_b"] = np.clip((close - bb_low) / np.maximum(bb_up - bb_low, 1e-10), 0.0, 1.0)
+    out["BB_width"] = (bb_up - bb_low) / np.maximum(bb_mid, 1e-10)
 
     # ── Trend ──
     out["ADX_raw"], out["DI_PLUS"], out["DI_MINUS"] = _adx_di(high, low, close)
@@ -207,6 +226,8 @@ def compute_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── Volatility ──
     out["ATR"] = _atr(high, low, close)
+    atr_ma20 = _ma(out["ATR"].values, 20)
+    out["ATR_ma_ratio"] = out["ATR"].values / np.maximum(atr_ma20, 1e-10)
 
     # ── Momentum ──
     out["RSI14"] = _rsi(close, 14)
@@ -223,6 +244,8 @@ def compute_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── Volume ──
     out["OBV"] = _obv(close, volume)
+    vol_ma20 = _ma(volume, 20)
+    out["volume_ma_ratio"] = volume / np.maximum(vol_ma20, 1e-10)
 
     # ── Raw passthrough ──
     for col in ["成交额"]:

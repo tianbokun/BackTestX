@@ -174,6 +174,14 @@ def render_rl_training(end_date, adjust):
         target_update = st.number_input("目标网络更新间隔", min_value=10, value=50, step=10)
         buffer_capacity = st.number_input("经验回放容量", min_value=1000, value=10000, step=1000)
 
+    with st.sidebar.expander("🎯 奖励函数设置", expanded=False):
+        rl_reward_window = st.slider("奖励窗口(交易日)", min_value=5, max_value=252, value=63, step=5,
+                                     help="越长则代理越关注长期趋势，推荐63(季度)/126(半年)")
+        rl_vol_penalty = st.number_input("波动率惩罚系数", min_value=0.0, max_value=1.0, value=0.1, step=0.05,
+                                         help="越小越愿意持有趋势上涨(推荐0.0~0.1)")
+        rl_dd_penalty = st.number_input("回撤惩罚系数", min_value=0.0, max_value=5.0, value=1.0, step=0.1,
+                                        help="越大越积极逃顶(推荐1.0~2.0)")
+
     search_btn = st.sidebar.button("🔍 超参搜索", width='stretch')
     run_btn = st.sidebar.button("🚀 开始训练", type="primary", width='stretch')
 
@@ -295,6 +303,9 @@ def render_rl_training(end_date, adjust):
                     combo_callback=_hp_combo_callback,
                     fold_callback=_hp_fold_callback,
                     cancel_check=_hp_cancel_event.is_set,
+                    reward_window=int(rl_reward_window),
+                    vol_penalty_coef=float(rl_vol_penalty),
+                    dd_penalty_coef=float(rl_dd_penalty),
                     **fp,
                 )
                 _hp_output["_done"] = True
@@ -458,6 +469,9 @@ def render_rl_training(end_date, adjust):
                 "epsilon_start": float(epsilon_start), "epsilon_end": float(epsilon_end),
                 "epsilon_decay": int(epsilon_decay), "target_update": int(target_update),
                 "buffer_capacity": int(buffer_capacity),
+                "reward_window": int(rl_reward_window),
+                "vol_penalty_coef": float(rl_vol_penalty),
+                "dd_penalty_coef": float(rl_dd_penalty),
             }
         except ValueError:
             st.error("超参数格式错误，请检查数字格式")

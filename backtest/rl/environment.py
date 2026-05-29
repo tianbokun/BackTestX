@@ -11,7 +11,9 @@ class StockTradingEnv:
         commission_rate: float = 0.000235,
         min_commission: float = 5.0,
         stamp_duty: float = 0.001,
-        reward_window: int = 22,
+        reward_window: int = 63,
+        vol_penalty_coef: float = 0.1,
+        dd_penalty_coef: float = 1.0,
     ):
         self.state_vectors = state_vectors
         self.close = close_prices
@@ -21,6 +23,8 @@ class StockTradingEnv:
         self.sd = stamp_duty
         self.min_c = min_commission
         self.reward_window = reward_window
+        self.vol_penalty_coef = vol_penalty_coef
+        self.dd_penalty_coef = dd_penalty_coef
         self.n_steps = len(close_prices)
 
         self._last_trade_cost = 0.0
@@ -92,11 +96,11 @@ class StockTradingEnv:
 
         peak = max(pv_window)
         drawdown = (peak - pv_window[-1]) / max(peak, 1e-9)
-        dd_penalty = 0.5 * drawdown
+        dd_penalty = self.dd_penalty_coef * drawdown
 
         daily_rets = np.diff(pv_window) / np.maximum(np.array(pv_window[:-1]), 1e-9)
         vol = np.std(daily_rets)
-        vol_penalty = 0.3 * vol * np.sqrt(252)
+        vol_penalty = self.vol_penalty_coef * vol * np.sqrt(252)
 
         cost_penalty = self._last_trade_cost / self.initial_capital
 
