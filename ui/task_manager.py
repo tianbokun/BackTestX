@@ -223,14 +223,14 @@ def _render_progress_chart(pdata):
         name="最优",
         marker=dict(color="#22c55e", size=12, symbol="star"),
         text=[f"<b>Reward {best_val:.4f}</b>"],
-            textposition="top center",
-            textfont=dict(color="#22c55e", size=12),
-        ))
-        fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10),
-                          xaxis_title="Episode", yaxis_title="Reward",
-                          showlegend=True)
-        st.plotly_chart(fig, width='stretch')
-        st.caption(f"🏆 最优 Reward: 第 {best_ep} episode, Reward={best_val:.4f}")
+        textposition="top center",
+        textfont=dict(color="#22c55e", size=12),
+    ))
+    fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10),
+                      xaxis_title="Episode", yaxis_title="Reward",
+                      showlegend=True)
+    st.plotly_chart(fig, width='stretch')
+    st.caption(f"🏆 最优 Reward: 第 {best_ep} episode, Reward={best_val:.4f}")
 
 
 def _render_detail(task: dict, mgr: TaskManager):
