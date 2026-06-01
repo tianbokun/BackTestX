@@ -191,16 +191,14 @@ def _render_running_detail(task: dict, mgr: TaskManager, tid: str):
         st.rerun()
 
     pdata = mgr.get_progress_data(tid)
-    _render_progress_chart(pdata, task["type"])
+    _render_progress_chart(pdata)
 
 
-def _render_progress_chart(pdata, task_type: str):
+def _render_progress_chart(pdata):
     if not pdata or len(pdata) < 2:
         return
     df = pd.DataFrame(pdata, columns=["ep", "value"])
-    is_rl = task_type == "RL训练"
-    ylabel = "Loss" if is_rl else "Reward"
-    best_idx = df["value"].idxmin() if is_rl else df["value"].idxmax()
+    best_idx = df["value"].idxmax()
     best_val = df.loc[best_idx, "value"]
     best_ep = int(df.loc[best_idx, "ep"])
 
@@ -224,15 +222,15 @@ def _render_progress_chart(pdata, task_type: str):
         mode="markers+text",
         name="最优",
         marker=dict(color="#22c55e", size=12, symbol="star"),
-        text=[f"<b>{ylabel} {best_val:.4f}</b>"],
-        textposition="top center",
-        textfont=dict(color="#22c55e", size=12),
-    ))
-    fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10),
-                      xaxis_title="Episode", yaxis_title=ylabel,
-                      showlegend=True)
-    st.plotly_chart(fig, width='stretch')
-    st.caption(f"🏆 最优 {ylabel}: 第 {best_ep} episode, {ylabel}={best_val:.4f}")
+        text=[f"<b>Reward {best_val:.4f}</b>"],
+            textposition="top center",
+            textfont=dict(color="#22c55e", size=12),
+        ))
+        fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10),
+                          xaxis_title="Episode", yaxis_title="Reward",
+                          showlegend=True)
+        st.plotly_chart(fig, width='stretch')
+        st.caption(f"🏆 最优 Reward: 第 {best_ep} episode, Reward={best_val:.4f}")
 
 
 def _render_detail(task: dict, mgr: TaskManager):
@@ -259,7 +257,7 @@ def _render_detail(task: dict, mgr: TaskManager):
         pdata = task.get("_progress_data") or mgr.get_progress_data(tid)
         if pdata:
             st.subheader("📈 训练过程")
-            _render_progress_chart(pdata, task["type"])
+            _render_progress_chart(pdata)
 
     elif status == TaskStatus.FAILED.value:
         st.error(f"训练失败: {task.get('error', '未知错误')}")

@@ -98,16 +98,18 @@ def train_dqn(
             dd_penalty_coef=dd_penalty_coef,
         )
         state = env.reset()
+        ep_reward = 0.0
         done = False
         while not done:
             action = agent.act(state)
             next_state, reward, done = env.step(action)
+            ep_reward += reward
             agent.memory.push(state, action, reward, next_state, done)
             state = next_state
             agent.learn()
 
         if progress_callback:
-            progress_callback(ep, n_episodes, agent.losses[-1] if agent.losses else 0)
+            progress_callback(ep, n_episodes, ep_reward)
 
     return agent, state_vectors
 
