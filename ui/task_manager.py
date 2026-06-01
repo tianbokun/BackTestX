@@ -13,6 +13,7 @@ STATUS_EMOJI = {
     TaskStatus.COMPLETED.value: "✅",
     TaskStatus.FAILED.value: "❌",
     TaskStatus.CANCELLED.value: "🚫",
+    TaskStatus.EARLY_STOPPED.value: "⏹️",
 }
 
 
@@ -34,30 +35,44 @@ def _ensure_dates(dates):
 
 def _render_rl_result(result: dict):
     dqn = result["result_dqn"]
+    dqn_best = result.get("result_dqn_best")
     bh = result["result_bh"]
     meta = result.get("meta", {})
 
-    comp = pd.DataFrame([
-        {"策略": "DQN", "最终金额": dqn["final_value"],
+    rows = [
+        {"策略": "DQN (最终)", "最终金额": dqn["final_value"],
          "收益率%": dqn["total_return_pct"],
          "夏普比率": dqn["sharpe_ratio"],
          "最大回撤%": dqn["max_drawdown_pct"],
          "交易次数": dqn["num_trades"]},
-        {"策略": "买入持有(BH)", "最终金额": bh["final_value"],
-         "收益率%": bh["total_return_pct"],
-         "夏普比率": bh["sharpe_ratio"],
-         "最大回撤%": bh["max_drawdown_pct"],
-         "交易次数": 0},
-    ])
+    ]
+    if dqn_best is not None:
+        rows.append({"策略": "DQN (最佳episode)", "最终金额": dqn_best["final_value"],
+                     "收益率%": dqn_best["total_return_pct"],
+                     "夏普比率": dqn_best["sharpe_ratio"],
+                     "最大回撤%": dqn_best["max_drawdown_pct"],
+                     "交易次数": dqn_best["num_trades"]})
+    rows.append({"策略": "买入持有(BH)", "最终金额": bh["final_value"],
+                 "收益率%": bh["total_return_pct"],
+                 "夏普比率": bh["sharpe_ratio"],
+                 "最大回撤%": bh["max_drawdown_pct"],
+                 "交易次数": 0})
+    comp = pd.DataFrame(rows)
     st.dataframe(comp, width='stretch', hide_index=True)
 
     test_idx = _ensure_dates(meta.get("df_test_index", dqn.get("dates")))
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=test_idx, y=dqn["equity_curve"],
-        mode="lines", name=f"DQN ({meta.get('system_version', '?')})",
+        mode="lines", name=f"DQN 最终 ({meta.get('system_version', '?')})",
         line=dict(color="#1f77b4", width=2),
     ))
+    if dqn_best is not None:
+        fig.add_trace(go.Scatter(
+            x=test_idx, y=dqn_best["equity_curve"],
+            mode="lines", name="DQN 最佳episode",
+            line=dict(color="#2ca02c", width=2, dash="dot"),
+        ))
     fig.add_trace(go.Scatter(
         x=test_idx, y=bh["equity_curve"],
         mode="lines", name="买入持有(BH)",
@@ -71,13 +86,22 @@ def _render_rl_result(result: dict):
     )
     st.plotly_chart(fig, width='stretch')
 
-    trades = _ensure_trades(dqn.get("trades"))
-    if not trades.empty:
-        trades = trades.copy()
-        if "日期" in trades.columns:
-            trades["日期"] = trades["日期"].dt.strftime("%Y-%m-%d")
+    dqn_final_has_trades = not _ensure_trades(dqn.get("trades")).empty
+    dqn_best_has_trades = dqn_best is not None and not _ensure_trades(dqn_best.get("trades")).empty
+    if dqn_final_has_trades or dqn_best_has_trades:
         st.markdown("**📝 交易记录**")
-        st.dataframe(trades, width='stretch', hide_index=True)
+        trade_source = st.selectbox(
+            "选择查看", ["最终权重", "最佳episode"],
+            key="task_rl_trade_source",
+            disabled=not (dqn_final_has_trades and dqn_best_has_trades),
+        )
+        src = dqn_best if trade_source == "最佳episode" else dqn
+        trades = _ensure_trades(src.get("trades"))
+        if not trades.empty:
+            trades = trades.copy()
+            if "日期" in trades.columns:
+                trades["日期"] = trades["日期"].dt.strftime("%Y-%m-%d")
+            st.dataframe(trades, width='stretch', hide_index=True)
 
 
 def _render_hrl_result(result: dict):
@@ -186,8 +210,12 @@ def _render_running_detail(task: dict, mgr: TaskManager, tid: str):
     st.progress(task.get("progress", 0))
     st.markdown(f"**进度: {pct:.0f}%**")
 
-    if st.button("取消训练", key=f"detail_cancel_{tid}"):
+    cancel_requested = task.get("_cancel_requested", False)
+    if cancel_requested:
+        st.info("⏳ 正在停止... (等待当前 episode 完成后进行评估)")
+    elif st.button("取消训练", key=f"detail_cancel_{tid}"):
         mgr.cancel(tid)
+        st.session_state[f"_cancel_{tid}"] = True
         st.rerun()
 
     pdata = mgr.get_progress_data(tid)
@@ -245,7 +273,9 @@ def _render_detail(task: dict, mgr: TaskManager):
     if status == TaskStatus.RUNNING.value:
         _render_running_detail(task, mgr, tid)
 
-    elif status == TaskStatus.COMPLETED.value:
+    elif status in (TaskStatus.COMPLETED.value, TaskStatus.EARLY_STOPPED.value):
+        if status == TaskStatus.EARLY_STOPPED.value:
+            st.warning("⚠️ 训练已手动停止，以下为部分训练后的评估结果")
         result = mgr.get_result(tid)
         if result:
             st.subheader(f"📊 {task['type']} 详细结果")
@@ -296,10 +326,18 @@ def _render_list(tasks: list, mgr: TaskManager):
             st.button("查看详情", key=f"view_{tid}",
                       on_click=_select_task, args=(tid,))
         with cols[4]:
-            if status in (TaskStatus.PENDING.value, TaskStatus.RUNNING.value):
+            cancel_requested = st.session_state.get(f"_cancel_{tid}", False)
+            if status == TaskStatus.PENDING.value:
                 if st.button("取消", key=f"cancel_{tid}"):
                     mgr.cancel(tid)
                     st.rerun()
+            elif status == TaskStatus.RUNNING.value and not cancel_requested:
+                if st.button("取消", key=f"cancel_{tid}"):
+                    mgr.cancel(tid)
+                    st.session_state[f"_cancel_{tid}"] = True
+                    st.rerun()
+            elif status == TaskStatus.RUNNING.value and cancel_requested:
+                st.caption("停止中...")
 
         if i < len(tasks) - 1:
             st.divider()

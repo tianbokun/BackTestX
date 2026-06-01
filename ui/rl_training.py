@@ -28,10 +28,13 @@ def _rl_train_task(params, task_id=None, cancel_check=None):
     from backtest.rl.trainer import train_dqn, evaluate, run_bh_baseline
     mgr = TaskManager()
 
+    episodes_done = [0]
+
     def progress(ep, total, loss):
+        episodes_done[0] = ep + 1
         mgr.update_progress(task_id, (ep + 1) / total, progress_data=(ep, loss))
 
-    agent, _ = train_dqn(
+    agent, _, agent_best = train_dqn(
         params["df_train"],
         system_version=params["system_version"],
         feature_groups=params["feature_groups"],
@@ -40,19 +43,25 @@ def _rl_train_task(params, task_id=None, cancel_check=None):
         **params["dqn_params"],
         **params["fee_params"],
     )
-    if cancel_check():
+    if cancel_check() and episodes_done[0] == 0:
         return None
 
     result_dqn = evaluate(agent, params["df_test"],
                           system_version=params["system_version"],
                           feature_groups=params["feature_groups"],
                           **params["fee_params"])
+    result_dqn_best = evaluate(agent_best, params["df_test"],
+                               system_version=params["system_version"],
+                               feature_groups=params["feature_groups"],
+                               **params["fee_params"]) if agent_best else None
     result_bh = run_bh_baseline(params["df_test"],
                                 initial_capital=params["fee_params"]["initial_capital"])
 
     return {
         "agent": agent,
+        "agent_best": agent_best,
         "result_dqn": result_dqn,
+        "result_dqn_best": result_dqn_best,
         "result_bh": result_bh,
         "meta": params["meta"],
     }
@@ -390,7 +399,7 @@ def render_rl_training(end_date, adjust):
 
             st.markdown("### 📊 验证集回测结果 (最优参数)")
             with st.spinner("正在训练/回测..."):
-                best_agent, _ = train_dqn(
+                best_agent, _, _ = train_dqn(
                     df_train, system_version=system_version,
                     feature_groups=selected_groups,
                     n_episodes=bp["n_episodes"], lr=bp["lr"], gamma=bp["gamma"],
@@ -501,18 +510,22 @@ def render_rl_training(end_date, adjust):
     if rl_loaded_task_id:
         mgr = TaskManager()
         task = mgr.get_task(rl_loaded_task_id)
-        if task and task["status"] == TaskStatus.COMPLETED.value:
+        if task and task["status"] in (TaskStatus.COMPLETED.value, TaskStatus.EARLY_STOPPED.value):
             result = mgr.get_result(rl_loaded_task_id)
             if result is not None:
                 st.session_state.rl_trained_agent = result["agent"]
+                st.session_state.rl_best_agent = result.get("agent_best")
                 st.session_state.rl_dqn_result = result["result_dqn"]
+                st.session_state.rl_dqn_best_result = result.get("result_dqn_best")
                 st.session_state.rl_bh_result = result["result_bh"]
                 st.session_state.rl_train_meta = result["meta"]
 
     # ── 展示训练结果 + 保存按钮 (在 run_btn 外部, 持久化) ──
     if st.session_state.rl_trained_agent is not None:
         agent = st.session_state.rl_trained_agent
+        agent_best = st.session_state.get("rl_best_agent")
         result_dqn = st.session_state.rl_dqn_result
+        result_dqn_best = st.session_state.get("rl_dqn_best_result")
         result_bh = st.session_state.rl_bh_result
         meta_info = st.session_state.rl_train_meta
 
@@ -520,18 +533,25 @@ def render_rl_training(end_date, adjust):
         st.subheader("📊 测试集回测结果")
 
         st.markdown("#### 📋 策略指标对比")
-        comp = pd.DataFrame([
-            {"策略": "DQN", "最终金额": result_dqn["final_value"],
+        rows = [
+            {"策略": "DQN (最终)", "最终金额": result_dqn["final_value"],
              "收益率%": result_dqn["total_return_pct"],
              "夏普比率": result_dqn["sharpe_ratio"],
              "最大回撤%": result_dqn["max_drawdown_pct"],
              "交易次数": result_dqn["num_trades"]},
-            {"策略": "买入持有(BH)", "最终金额": result_bh["final_value"],
-             "收益率%": result_bh["total_return_pct"],
-             "夏普比率": result_bh["sharpe_ratio"],
-             "最大回撤%": result_bh["max_drawdown_pct"],
-             "交易次数": 0},
-        ])
+        ]
+        if result_dqn_best is not None:
+            rows.append({"策略": "DQN (最佳episode)", "最终金额": result_dqn_best["final_value"],
+                         "收益率%": result_dqn_best["total_return_pct"],
+                         "夏普比率": result_dqn_best["sharpe_ratio"],
+                         "最大回撤%": result_dqn_best["max_drawdown_pct"],
+                         "交易次数": result_dqn_best["num_trades"]})
+        rows.append({"策略": "买入持有(BH)", "最终金额": result_bh["final_value"],
+                     "收益率%": result_bh["total_return_pct"],
+                     "夏普比率": result_bh["sharpe_ratio"],
+                     "最大回撤%": result_bh["max_drawdown_pct"],
+                     "交易次数": 0})
+        comp = pd.DataFrame(rows)
         st.dataframe(comp, width='stretch', hide_index=True)
 
         st.markdown("#### 📈 累计利润对比")
@@ -540,9 +560,15 @@ def render_rl_training(end_date, adjust):
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=test_idx, y=result_dqn["equity_curve"],
-            mode="lines", name=f"DQN ({meta_info['system_version']})",
+            mode="lines", name=f"DQN 最终 ({meta_info['system_version']})",
             line=dict(color="#1f77b4", width=2),
         ))
+        if result_dqn_best is not None:
+            fig.add_trace(go.Scatter(
+                x=test_idx, y=result_dqn_best["equity_curve"],
+                mode="lines", name="DQN 最佳episode",
+                line=dict(color="#2ca02c", width=2, dash="dot"),
+            ))
         fig.add_trace(go.Scatter(
             x=test_idx, y=result_bh["equity_curve"],
             mode="lines", name="买入持有(BH)",
@@ -557,31 +583,45 @@ def render_rl_training(end_date, adjust):
         )
         st.plotly_chart(fig, width='stretch')
 
-        if not result_dqn["trades"].empty:
+        # ── 交易记录（可切换） ──
+        dqn_best_has_trades = result_dqn_best is not None and not result_dqn_best["trades"].empty
+        dqn_final_has_trades = not result_dqn["trades"].empty
+        if dqn_final_has_trades or dqn_best_has_trades:
             st.markdown("#### 📝 交易记录")
-            trades_df = result_dqn["trades"].copy()
-            trades_df["日期"] = trades_df["日期"].dt.strftime("%Y-%m-%d")
-            st.dataframe(trades_df, width='stretch', hide_index=True)
+            trade_source = st.selectbox(
+                "选择查看", ["最终权重", "最佳episode"],
+                key="rl_trade_source",
+                disabled=not (dqn_final_has_trades and dqn_best_has_trades),
+            )
+            trades_df = (result_dqn_best["trades"] if trade_source == "最佳episode" else result_dqn["trades"]).copy()
+            if not trades_df.empty:
+                trades_df["日期"] = trades_df["日期"].dt.strftime("%Y-%m-%d")
+                st.dataframe(trades_df, width='stretch', hide_index=True)
 
+        # ── 保存模型 ──
         sv = meta_info["system_version"]
         sym = meta_info["symbol"]
         _train_save_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         _train_save_default = f"{sym}_{sv}_{_train_save_ts}"
         _train_save_name = st.text_input("模型名称", value=_train_save_default, key="rl_train_save_name")
+        save_choice = st.radio("保存哪个模型?", ["最终权重", "最佳episode权重"],
+                               index=0, horizontal=True, key="rl_save_choice")
         save_col1, save_col2 = st.columns([1, 5])
         with save_col1:
             if st.button("💾 保存模型", type="primary", key="rl_save_model_btn"):
+                save_agent = agent_best if save_choice == "最佳episode权重" and agent_best is not None else agent
+                save_result = result_dqn_best if save_choice == "最佳episode权重" and result_dqn_best is not None else result_dqn
                 save_path = Path(f"saved_models/rl/{_train_save_name}.pt")
                 save_path.parent.mkdir(parents=True, exist_ok=True)
-                agent.save(str(save_path), {
+                save_agent.save(str(save_path), {
                     "symbol": sym, "system_version": sv,
                     "feature_groups": selected_groups,
                     "train_start": meta_info["train_start"],
                     "train_end": meta_info["train_end"],
-                    "test_return": result_dqn["total_return_pct"],
-                    "sharpe": result_dqn["sharpe_ratio"],
+                    "test_return": save_result["total_return_pct"],
+                    "sharpe": save_result["sharpe_ratio"],
                 })
-                st.session_state.rl_agent = agent
+                st.session_state.rl_agent = save_agent
                 st.session_state.rl_model_info = {
                     "name": save_path.stem, "path": str(save_path),
                     "symbol": sym, "system_version": sv,

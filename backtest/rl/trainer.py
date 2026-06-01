@@ -1,3 +1,4 @@
+import copy
 import itertools
 import numpy as np
 import pandas as pd
@@ -82,6 +83,10 @@ def train_dqn(
         target_update=target_update,
     )
 
+    best_reward = -float("inf")
+    best_q_state = None
+    best_target_state = None
+
     if cancel_check is None:
         cancel_check = lambda: False
     for ep in range(n_episodes):
@@ -108,10 +113,29 @@ def train_dqn(
             state = next_state
             agent.learn()
 
+        if ep_reward > best_reward:
+            best_reward = ep_reward
+            best_q_state = copy.deepcopy(agent.q_net.state_dict())
+            best_target_state = copy.deepcopy(agent.target_net.state_dict())
+
         if progress_callback:
             progress_callback(ep, n_episodes, ep_reward)
 
-    return agent, state_vectors
+    agent_best = None
+    if best_q_state is not None:
+        agent_best = DQNAgent(
+            state_dim=state_dim, n_actions=3,
+            hidden=hidden, lr=lr, gamma=gamma,
+            epsilon_start=epsilon_start, epsilon_end=epsilon_end,
+            epsilon_decay=epsilon_decay,
+            buffer_capacity=buffer_capacity,
+            batch_size=batch_size,
+            target_update=target_update,
+        )
+        agent_best.q_net.load_state_dict(best_q_state)
+        agent_best.target_net.load_state_dict(best_target_state)
+
+    return agent, state_vectors, agent_best
 
 
 def evaluate(
@@ -320,7 +344,7 @@ def hyperparam_search(
                 "dd_penalty_coef": dd_penalty_coef,
             }
             try:
-                agent, _ = train_dqn(df_fold_train, system_version, feature_groups, **params)
+                agent, _, _ = train_dqn(df_fold_train, system_version, feature_groups, **params)
                 result = evaluate(agent, df_fold_val, system_version, feature_groups,
                                   initial_capital=initial_capital,
                                   commission_rate=commission_rate,

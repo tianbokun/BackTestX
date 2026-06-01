@@ -18,6 +18,7 @@ class TaskStatus(str, Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+    EARLY_STOPPED = "EARLY_STOPPED"
 
 
 class TaskManager:
@@ -173,7 +174,14 @@ class TaskManager:
                     return self._cancel_events[tid].is_set()
                 result = target_fn(*args, task_id=tid, cancel_check=cancel_check)
                 if self._cancel_events[tid].is_set():
-                    self._tasks[tid]["status"] = TaskStatus.CANCELLED.value
+                    if result is not None:
+                        self._tasks[tid]["status"] = TaskStatus.EARLY_STOPPED.value
+                        self._tasks[tid]["result_display"] = self._extract_display_data(result)
+                        if tid in self._progress_buffers:
+                            self._tasks[tid]["_progress_data"] = list(self._progress_buffers[tid])
+                        self._results[tid] = result
+                    else:
+                        self._tasks[tid]["status"] = TaskStatus.CANCELLED.value
                 else:
                     self._tasks[tid]["status"] = TaskStatus.COMPLETED.value
                     self._tasks[tid]["result_display"] = self._extract_display_data(result)
@@ -198,10 +206,13 @@ class TaskManager:
         task = self._tasks.get(task_id)
         if task is None:
             return False
-        if task["status"] in (TaskStatus.PENDING.value, TaskStatus.RUNNING.value):
+        if task["status"] == TaskStatus.PENDING.value:
             self._cancel_events[task_id].set()
             task["status"] = TaskStatus.CANCELLED.value
             self._flush()
+            return True
+        if task["status"] == TaskStatus.RUNNING.value:
+            self._cancel_events[task_id].set()
             return True
         return False
 

@@ -17,7 +17,7 @@ print()
 
 print("=" * 60)
 print("STEP 2: Training small DQN model")
-agent, states = train_dqn(df, system_version="1.0", n_episodes=8, batch_size=64, lr=1e-4, hidden=64,
+agent, states, _ = train_dqn(df, system_version="1.0", n_episodes=8, batch_size=64, lr=1e-4, hidden=64,
     target_update=100, buffer_capacity=2000, epsilon_decay=200,
     commission_rate=0.000235, min_commission=5.0, stamp_duty=0.001,
     initial_capital=100000.0)

@@ -31,7 +31,10 @@ def _hrl_train_task(params, task_id=None, cancel_check=None):
     import numpy as np
     mgr = TaskManager()
 
+    episodes_done = [0]
+
     def progress(ep, total, reward):
+        episodes_done[0] = ep + 1
         mgr.update_progress(task_id, (ep + 1) / total, progress_data=(ep, reward))
 
     p = params
@@ -57,7 +60,7 @@ def _hrl_train_task(params, task_id=None, cancel_check=None):
         trade_fraction=p["trade_fraction"],
     )
     train_result = trainer.train(cancel_check=cancel_check, progress_callback=progress)
-    if cancel_check():
+    if cancel_check() and episodes_done[0] == 0:
         return None
 
     test_etf_data = {}
@@ -282,7 +285,7 @@ def render_hierarchical_rl(end_date, adjust):
     if loaded_task_id:
         mgr = TaskManager()
         task = mgr.get_task(loaded_task_id)
-        if task and task["status"] == TaskStatus.COMPLETED.value:
+        if task and task["status"] in (TaskStatus.COMPLETED.value, TaskStatus.EARLY_STOPPED.value):
             result = mgr.get_result(loaded_task_id)
             if result is not None:
                 st.session_state.hrl_test_result = result["test_result"]
