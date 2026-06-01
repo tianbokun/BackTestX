@@ -199,25 +199,56 @@ def _render_hrl_result(result: dict):
             st.dataframe(trade_log, width='stretch', hide_index=True)
 
 
+def _refetch_rl_data(meta: dict) -> dict:
+    from data.symbol_registry import SymbolRegistry
+    import pandas as pd
+
+    symbol = meta.get("symbol", "")
+    adjust = meta.get("adjust", "qfq")
+    train_start = meta.get("train_start", "")
+    train_end = meta.get("train_end", "")
+    test_dates = meta.get("df_test_index", [])
+
+    df = SymbolRegistry.fetch_data(symbol, adjust=adjust)
+    if df is None or df.empty:
+        raise ValueError(f"重新获取 {symbol} 数据失败")
+
+    df_train = df[(df.index >= pd.Timestamp(train_start)) & (df.index <= pd.Timestamp(train_end))].copy()
+    if len(test_dates) > 0:
+        test_start_s = test_dates[0][:10]
+        test_end_s = test_dates[-1][:10]
+        df_test = df[(df.index >= pd.Timestamp(test_start_s)) & (df.index <= pd.Timestamp(test_end_s))].copy()
+    else:
+        df_test = df[df.index > pd.Timestamp(train_end)].copy()
+    return {"df_train": df_train, "df_test": df_test, "df_test_index": df_test.index}
+
+
 def _render_rl_retrain_form(task: dict, mgr: TaskManager):
     tid = task.get("_id", "")
     params = task.get("params")
-    if params is None:
-        st.info("任务参数已过期（页面刷新后丢失），请在 🤖 强化学习 页面手动配置新的训练")
+    params_display = task.get("params_display")
+    if params is None and params_display is None:
+        st.info("任务参数已过期，无法重新训练")
         return
 
-    dqn = params.get("dqn_params", {})
-    fee = params.get("fee_params", {})
-    meta = params.get("meta", {})
+    needs_refetch = params is None
+    src = params if not needs_refetch else params_display
+
+    dqn = src.get("dqn_params", {})
+    fee = src.get("fee_params", {})
+    meta = src.get("meta", {})
     symbol = meta.get("symbol", "?")
-    sys_ver_default = params.get("system_version", "1.0")
+    sys_ver_default = src.get("system_version", "1.0")
 
     from backtest.rl.feature_engineer import FEATURE_GROUPS
     fg_keys = list(FEATURE_GROUPS.keys())
     fg_labels = [FEATURE_GROUPS[k]["label"] for k in fg_keys]
     fg_map = dict(zip(fg_labels, fg_keys))
-    orig_fgs = params.get("feature_groups", [])
+    orig_fgs = src.get("feature_groups", [])
     orig_labels = [lb for lb, k in fg_map.items() if k in orig_fgs]
+
+    if needs_refetch:
+        st.info("🔄 数据从持久化参数重新获取中...")
 
     with st.form(key=f"retrain_rl_{tid}", clear_on_submit=True):
         col1, col2, col3 = st.columns(3)
@@ -253,10 +284,24 @@ def _render_rl_retrain_form(task: dict, mgr: TaskManager):
             min_comm = st.number_input("最低佣金", value=float(fee.get("min_commission", 5.0)))
             capital = st.number_input("初始资金", value=float(fee.get("initial_capital", 100000.0)))
 
-        st.caption(f"📦 数据来源: {symbol} ｜ 训练集 Rows: {len(params.get('df_train', []))}")
+        st.caption(f"📦 {symbol} ｜ 训练 {meta.get('train_start','?')} ~ {meta.get('train_end','?')}"
+                   f" ｜ 测试 {meta.get('df_test_index',[len(meta)]*2)} 行"
+                   f" ｜ 数据来源: {'内存' if not needs_refetch else '重抓'}")
 
         submitted = st.form_submit_button("🚀 提交训练任务", type="primary")
         if submitted:
+            if needs_refetch:
+                try:
+                    fetched = _refetch_rl_data(meta)
+                    df_train, df_test = fetched["df_train"], fetched["df_test"]
+                    meta = dict(meta, df_test_index=fetched["df_test_index"])
+                except Exception as e:
+                    st.error(f"数据重抓失败: {e}")
+                    st.stop()
+            else:
+                df_train = params["df_train"]
+                df_test = params["df_test"]
+
             new_dqn = dict(dqn,
                 n_episodes=n_episodes, lr=lr, gamma=gamma,
                 hidden=hidden, batch_size=batch_size,
@@ -269,11 +314,13 @@ def _render_rl_retrain_form(task: dict, mgr: TaskManager):
                 commission_rate=commission, min_commission=min_comm,
                 stamp_duty=stamp, initial_capital=capital,
             )
-            new_params = dict(params,
+            new_params = dict(
+                df_train=df_train, df_test=df_test,
                 system_version=sys_ver,
                 feature_groups=selected_fgs,
                 dqn_params=new_dqn,
                 fee_params=new_fee,
+                meta=meta,
             )
             from ui.rl_training import _rl_train_task
             new_tid = mgr.submit("RL训练", new_params, _rl_train_task, args=(new_params,))
@@ -282,62 +329,132 @@ def _render_rl_retrain_form(task: dict, mgr: TaskManager):
             st.rerun()
 
 
+def _refetch_hrl_data(params: dict) -> dict:
+    from data.symbol_registry import SymbolRegistry
+    import pandas as pd
+
+    syms = params.get("selected_symbols", [])
+    adjust = params.get("adjust", "qfq")
+    test_start = params.get("test_start", "")
+    test_end = params.get("test_end", "")
+
+    etf_data = {}
+    for sym in syms:
+        df = SymbolRegistry.fetch_data(sym, adjust=adjust)
+        if df is not None and not df.empty:
+            etf_data[sym] = df
+    if len(etf_data) < 2:
+        raise ValueError(f"数据重抓失败，成功获取 {len(etf_data)} 支 ETF")
+
+    def _align(ed):
+        common = None
+        for sym, df in ed.items():
+            idx = set(df.index)
+            if common is None:
+                common = idx
+            else:
+                common &= idx
+        return sorted(common)
+
+    aligned = _align(etf_data)
+    aligned_str = [str(d)[:10] for d in aligned]
+    train_end_i = int(len(aligned) * 0.6)
+    train_dates = aligned_str[:train_end_i + 1]
+    test_dates = [d for d in aligned_str if d >= test_start[:10] and d <= test_end[:10]]
+
+    train_etf_data = {}
+    for sym in syms:
+        train_etf_data[sym] = etf_data[sym].loc[:aligned[train_end_i]]
+
+    return {
+        "all_etf_data": etf_data,
+        "train_etf_data": train_etf_data,
+        "train_dates": train_dates,
+        "test_dates": test_dates,
+    }
+
+
 def _render_hrl_retrain_form(task: dict, mgr: TaskManager):
     tid = task.get("_id", "")
     params = task.get("params")
-    if params is None:
-        st.info("任务参数已过期（页面刷新后丢失），请在 🧠 分层RL 页面手动配置新的训练")
+    params_display = task.get("params_display")
+    if params is None and params_display is None:
+        st.info("任务参数已过期，无法重新训练")
         return
 
-    ep = params.get("n_episodes", 64)
+    needs_refetch = params is None
+    src = params if not needs_refetch else params_display
+
+    ep = src.get("n_episodes", 64)
+
+    if needs_refetch:
+        st.info("🔄 数据从持久化参数重新获取中...")
 
     with st.form(key=f"retrain_hrl_{tid}", clear_on_submit=True):
         st.markdown("**🧠 PPO 参数**")
         col1, col2, col3 = st.columns(3)
         with col1:
-            ppo_lr = st.number_input("PPO 学习率", value=float(params.get("ppo_lr", 3e-4)), format="%.6f")
-            clip_epsilon = st.number_input("Clip ε", value=float(params.get("clip_epsilon", 0.2)), format="%.2f")
+            ppo_lr = st.number_input("PPO 学习率", value=float(src.get("ppo_lr", 3e-4)), format="%.6f")
+            clip_epsilon = st.number_input("Clip ε", value=float(src.get("clip_epsilon", 0.2)), format="%.2f")
         with col2:
-            ppo_gamma = st.number_input("PPO γ", value=float(params.get("ppo_gamma", 0.99)), format="%.3f")
-            entropy_beta = st.number_input("熵奖励 β", value=float(params.get("entropy_beta", 0.01)), format="%.3f")
+            ppo_gamma = st.number_input("PPO γ", value=float(src.get("ppo_gamma", 0.99)), format="%.3f")
+            entropy_beta = st.number_input("熵奖励 β", value=float(src.get("entropy_beta", 0.01)), format="%.3f")
         with col3:
-            ppo_hidden = st.number_input("PPO 隐藏层", value=int(params.get("ppo_hidden", 128)), min_value=16)
+            ppo_hidden = st.number_input("PPO 隐藏层", value=int(src.get("ppo_hidden", 128)), min_value=16)
             n_episodes = st.number_input("Episode 数", value=int(ep), min_value=1)
 
         col1, col2, col3 = st.columns(3)
         with col1:
-            gae_lambda = st.number_input("GAE λ", value=float(params.get("gae_lambda", 0.95)), format="%.2f")
+            gae_lambda = st.number_input("GAE λ", value=float(src.get("gae_lambda", 0.95)), format="%.2f")
         with col2:
-            ppo_epochs = st.number_input("PPO Epochs", value=int(params.get("ppo_epochs", 10)), min_value=1)
+            ppo_epochs = st.number_input("PPO Epochs", value=int(src.get("ppo_epochs", 10)), min_value=1)
         with col3:
-            ppo_update_freq = st.number_input("PPO 更新频率", value=int(params.get("ppo_update_freq", 128)), min_value=1)
+            ppo_update_freq = st.number_input("PPO 更新频率", value=int(src.get("ppo_update_freq", 128)), min_value=1)
 
         st.markdown("**🤖 DQN 参数**")
         col1, col2, col3 = st.columns(3)
         with col1:
-            dqn_lr = st.number_input("DQN 学习率", value=float(params.get("dqn_lr", 1e-5)), format="%.6f")
-            dqn_hidden = st.number_input("DQN 隐藏层", value=int(params.get("dqn_hidden", 128)), min_value=16)
+            dqn_lr = st.number_input("DQN 学习率", value=float(src.get("dqn_lr", 1e-5)), format="%.6f")
+            dqn_hidden = st.number_input("DQN 隐藏层", value=int(src.get("dqn_hidden", 128)), min_value=16)
         with col2:
-            dqn_gamma = st.number_input("DQN γ", value=float(params.get("dqn_gamma", 0.98)), format="%.3f")
-            dqn_batch_size = st.number_input("DQN Batch", value=int(params.get("dqn_batch_size", 200)), min_value=16)
+            dqn_gamma = st.number_input("DQN γ", value=float(src.get("dqn_gamma", 0.98)), format="%.3f")
+            dqn_batch_size = st.number_input("DQN Batch", value=int(src.get("dqn_batch_size", 200)), min_value=16)
         with col3:
-            dqn_epsilon_decay = st.number_input("DQN ε Decay", value=int(params.get("dqn_epsilon_decay", 500)), min_value=50)
+            dqn_epsilon_decay = st.number_input("DQN ε Decay", value=int(src.get("dqn_epsilon_decay", 500)), min_value=50)
 
         st.markdown("**💵 费用与交易参数**")
         col1, col2, col3 = st.columns(3)
         with col1:
-            commission = st.number_input("佣金率", value=float(params.get("commission_rate", 0.00025)), format="%.5f")
+            commission = st.number_input("佣金率", value=float(src.get("commission_rate", 0.00025)), format="%.5f")
         with col2:
-            capital = st.number_input("初始资金", value=float(params.get("initial_capital", 100000.0)))
+            capital = st.number_input("初始资金", value=float(src.get("initial_capital", 100000.0)))
         with col3:
-            trade_fraction = st.number_input("单次交易比例", value=float(params.get("trade_fraction", 0.25)), format="%.2f")
+            trade_fraction = st.number_input("单次交易比例", value=float(src.get("trade_fraction", 0.25)), format="%.2f")
 
-        syms = params.get("selected_symbols", [])
+        syms = src.get("selected_symbols", [])
         st.caption(f"📦 ETF 组合: {', '.join(syms) if syms else '?'}")
 
         submitted = st.form_submit_button("🚀 提交训练任务", type="primary")
         if submitted:
-            new_params = dict(params,
+            if needs_refetch:
+                try:
+                    fetched = _refetch_hrl_data(src)
+                except Exception as e:
+                    st.error(f"数据重抓失败: {e}")
+                    st.stop()
+            else:
+                fetched = {
+                    "all_etf_data": params["all_etf_data"],
+                    "train_etf_data": params["train_etf_data"],
+                    "train_dates": params.get("train_dates", []),
+                    "test_dates": params.get("test_dates", []),
+                }
+
+            new_params = dict(src,
+                all_etf_data=fetched["all_etf_data"],
+                train_etf_data=fetched["train_etf_data"],
+                train_dates=fetched["train_dates"],
+                test_dates=fetched["test_dates"],
                 n_episodes=n_episodes,
                 ppo_lr=ppo_lr, ppo_gamma=ppo_gamma,
                 clip_epsilon=clip_epsilon, entropy_beta=entropy_beta,

@@ -499,6 +499,7 @@ def render_rl_training(end_date, adjust):
                 "train_start": str(train_start),
                 "train_end": str(train_end),
                 "df_test_index": df_test.index,
+                "adjust": adjust,
             },
         }
         mgr = TaskManager()

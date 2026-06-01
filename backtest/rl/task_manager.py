@@ -148,12 +148,37 @@ class TaskManager:
                 out.append(item)
         return out
 
+    @staticmethod
+    def _extract_params_safe(params: dict) -> dict:
+        safe = {}
+        for k, v in params.items():
+            if isinstance(v, pd.DataFrame):
+                safe[k] = {"_type": "DataFrame", "rows": len(v), "columns": list(v.columns)}
+            elif isinstance(v, pd.DatetimeIndex):
+                safe[k] = [str(d) for d in v]
+            elif isinstance(v, pd.Timestamp):
+                safe[k] = str(v)
+            elif isinstance(v, pd.Series):
+                safe[k] = {str(i): val for i, val in v.items()}
+            elif isinstance(v, np.ndarray):
+                safe[k] = v.tolist()
+            elif isinstance(v, (np.integer, np.floating, np.bool_)):
+                safe[k] = v.item()
+            elif isinstance(v, dict):
+                safe[k] = TaskManager._extract_params_safe(v)
+            elif isinstance(v, (list, tuple)):
+                safe[k] = TaskManager._extract_display_list(v)
+            else:
+                safe[k] = v
+        return safe
+
     def submit(self, task_type: str, params: dict, target_fn, args: tuple = ()) -> str:
         tid = uuid.uuid4().hex[:12]
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._tasks[tid] = {
             "type": task_type,
             "params": params,
+            "params_display": self._extract_params_safe(params),
             "status": TaskStatus.PENDING.value,
             "progress": 0.0,
             "created_at": now,

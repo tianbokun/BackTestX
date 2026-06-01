@@ -274,6 +274,7 @@ def render_hierarchical_rl(end_date, adjust):
             stamp_duty=float(hrl_stamp_duty),
             initial_capital=float(hrl_capital),
             trade_fraction=trade_fraction_f,
+            adjust=adjust,
         )
 
         mgr = TaskManager()
