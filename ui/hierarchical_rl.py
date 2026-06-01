@@ -94,6 +94,7 @@ def _hrl_train_task(params, task_id=None, cancel_check=None):
     benchmarks = test_trainer.compute_benchmarks()
 
     return {
+        "agent": trainer,
         "train_result": train_result,
         "test_result": test_result,
         "benchmarks": benchmarks,

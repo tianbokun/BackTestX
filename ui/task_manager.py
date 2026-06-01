@@ -1,10 +1,13 @@
 from datetime import datetime
+from pathlib import Path
 
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import torch
 
 from backtest.rl.task_manager import TaskManager, TaskStatus
+from backtest.rl.dqn_agent import DQNAgent
 
 
 STATUS_EMOJI = {
@@ -31,6 +34,67 @@ def _ensure_dates(dates):
     if isinstance(dates, list):
         return pd.DatetimeIndex([pd.Timestamp(d) for d in dates])
     return dates
+
+
+def _render_rl_save(result: dict):
+    agent = result.get("agent")
+    if agent is None:
+        st.info("💡 模型对象仅在训练会话中可用（页面刷新后丢失），请在此时保存")
+        return
+    meta = result.get("meta", {})
+    agent_best = result.get("agent_best")
+    dqn = result["result_dqn"]
+    dqn_best = result.get("result_dqn_best")
+    sym = meta.get("symbol", "unknown")
+    sv = meta.get("system_version", "1.0")
+    _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _default = f"{sym}_{sv}_{_ts}"
+    st.subheader("💾 保存模型")
+    _name = st.text_input("模型名称", value=_default, key="task_rl_save_name")
+    choice = "最终权重"
+    if agent_best is not None:
+        choice = st.radio("保存哪个模型?", ["最终权重", "最佳episode权重"],
+                          index=0, horizontal=True, key="task_rl_save_choice")
+    if st.button("💾 保存模型", type="primary", key="task_rl_save_btn"):
+        save_agent = agent_best if (choice == "最佳episode权重" and agent_best is not None) else agent
+        save_result = dqn_best if (choice == "最佳episode权重" and dqn_best is not None) else dqn
+        p = Path(f"saved_models/rl/{_name}.pt")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        save_agent.save(str(p), {
+            "symbol": sym, "system_version": sv,
+            "feature_groups": meta.get("feature_groups", []),
+            "train_start": meta.get("train_start", ""),
+            "train_end": meta.get("train_end", ""),
+            "test_return": save_result["total_return_pct"],
+            "sharpe": save_result["sharpe_ratio"],
+        })
+        st.session_state.rl_agent = save_agent
+        st.session_state.rl_model_info = {
+            "name": p.stem, "path": str(p),
+            "symbol": sym, "system_version": sv,
+            "feature_groups": meta.get("feature_groups", []),
+        }
+        st.success(f"✅ 模型已保存至 `{p}`")
+        st.rerun()
+
+
+def _render_hrl_save(result: dict):
+    trainer = result.get("agent")
+    if trainer is None:
+        st.info("💡 模型对象仅在训练会话中可用（页面刷新后丢失），请在此时保存")
+        return
+    syms = result.get("selected_symbols", [])
+    label = "_".join(syms[:3]) if syms else "hrl"
+    _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _default = f"{label}_{_ts}"
+    st.subheader("💾 保存模型")
+    _name = st.text_input("模型名称", value=_default, key="task_hrl_save_name")
+    if st.button("💾 保存模型", type="primary", key="task_hrl_save_btn"):
+        p = Path(f"saved_models/rl/{_name}.pt")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        trainer.save(str(p))
+        st.success(f"✅ HRL 模型已保存至 `{p}` (含 PPO + DQN 权重)")
+        st.rerun()
 
 
 def _render_rl_result(result: dict):
@@ -102,6 +166,8 @@ def _render_rl_result(result: dict):
             if "日期" in trades.columns:
                 trades["日期"] = trades["日期"].dt.strftime("%Y-%m-%d")
             st.dataframe(trades, width='stretch', hide_index=True)
+
+    _render_rl_save(result)
 
 
 def _render_hrl_result(result: dict):
@@ -198,6 +264,8 @@ def _render_hrl_result(result: dict):
         with st.expander("📝 交易记录", expanded=False):
             st.dataframe(trade_log, width='stretch', hide_index=True)
 
+    _render_hrl_save(result)
+
 
 def _refetch_rl_data(meta: dict) -> dict:
     from data.symbol_registry import SymbolRegistry
@@ -225,6 +293,17 @@ def _refetch_rl_data(meta: dict) -> dict:
 
 def _render_rl_retrain_form(task: dict, mgr: TaskManager):
     tid = task.get("_id", "")
+
+    done_key = f"retrain_rl_done_{tid}"
+    if done_key in st.session_state:
+        new_tid = st.session_state[done_key]
+        st.success(f"✅ 新训练任务已提交 (ID: {new_tid[:8]}...)")
+        st.caption("可关闭此面板或在「任务列表」中查看进度")
+        if st.button("📋 查看任务详情"):
+            st.session_state.selected_task_id = new_tid
+            st.rerun()
+        return
+
     params = task.get("params")
     params_display = task.get("params_display")
     if params is None and params_display is None:
@@ -324,8 +403,7 @@ def _render_rl_retrain_form(task: dict, mgr: TaskManager):
             )
             from ui.rl_training import _rl_train_task
             new_tid = mgr.submit("RL训练", new_params, _rl_train_task, args=(new_params,))
-            st.success(f"✅ 新训练任务已提交 (ID: {new_tid[:8]}...)")
-            st.session_state.pop(f"retrain_expand_{tid}", None)
+            st.session_state[done_key] = new_tid
             st.rerun()
 
 
@@ -376,6 +454,17 @@ def _refetch_hrl_data(params: dict) -> dict:
 
 def _render_hrl_retrain_form(task: dict, mgr: TaskManager):
     tid = task.get("_id", "")
+
+    done_key = f"retrain_hrl_done_{tid}"
+    if done_key in st.session_state:
+        new_tid = st.session_state[done_key]
+        st.success(f"✅ 新训练任务已提交 (ID: {new_tid[:8]}...)")
+        st.caption("可关闭此面板或在「任务列表」中查看进度")
+        if st.button("📋 查看任务详情"):
+            st.session_state.selected_task_id = new_tid
+            st.rerun()
+        return
+
     params = task.get("params")
     params_display = task.get("params_display")
     if params is None and params_display is None:
@@ -470,8 +559,7 @@ def _render_hrl_retrain_form(task: dict, mgr: TaskManager):
             )
             from ui.hierarchical_rl import _hrl_train_task
             new_tid = mgr.submit("HRL训练", new_params, _hrl_train_task, args=(new_params,))
-            st.success(f"✅ 新训练任务已提交 (ID: {new_tid[:8]}...)")
-            st.session_state.pop(f"retrain_expand_{tid}", None)
+            st.session_state[done_key] = new_tid
             st.rerun()
 
 
@@ -629,11 +717,44 @@ def _render_list(tasks: list, mgr: TaskManager):
             st.divider()
 
 
+def _render_model_browser():
+    model_dir = Path("saved_models/rl")
+    files = sorted(model_dir.glob("*.pt"), reverse=True) if model_dir.exists() else []
+    st.sidebar.markdown("### 📂 已保存模型")
+    if not files:
+        st.sidebar.caption("暂无已保存的模型")
+        return
+    names = [m.stem for m in files]
+    sel = st.sidebar.selectbox("选择模型", names, key="task_model_browser")
+    c1, c2 = st.sidebar.columns(2)
+    if c1.button("📥 加载", key="task_model_load"):
+        p = str(model_dir / f"{sel}.pt")
+        loaded = DQNAgent.load(p)
+        st.session_state.rl_agent = loaded
+        meta = torch.load(p, map_location="cpu", weights_only=False).get("metadata", {})
+        st.session_state.rl_model_info = {"path": p, "name": sel, **meta}
+        st.rerun()
+    if c2.button("🗑 删除", key="task_model_del"):
+        (model_dir / f"{sel}.pt").unlink()
+        st.rerun()
+    with st.sidebar.expander("✏️ 重命名", expanded=False):
+        rename_to = st.text_input("新名称", value=sel, key="task_model_rename_input")
+        if st.button("确认重命名", key="task_model_rename_btn"):
+            old_p = model_dir / f"{sel}.pt"
+            new_p = model_dir / f"{rename_to}.pt"
+            if not new_p.exists():
+                old_p.rename(new_p)
+                st.rerun()
+            else:
+                st.sidebar.error("名称已存在")
+
+
 def _select_task(tid: str):
     st.session_state.selected_task_id = tid
 
 
 def render_task_manager():
+    _render_model_browser()
     st.title("📋 训练任务管理")
     mgr = TaskManager()
     tasks = mgr.list_tasks()
