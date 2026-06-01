@@ -199,6 +199,165 @@ def _render_hrl_result(result: dict):
             st.dataframe(trade_log, width='stretch', hide_index=True)
 
 
+def _render_rl_retrain_form(task: dict, mgr: TaskManager):
+    tid = task.get("_id", "")
+    params = task.get("params")
+    if params is None:
+        st.info("任务参数已过期（页面刷新后丢失），请在 🤖 强化学习 页面手动配置新的训练")
+        return
+
+    dqn = params.get("dqn_params", {})
+    fee = params.get("fee_params", {})
+    meta = params.get("meta", {})
+    symbol = meta.get("symbol", "?")
+    sys_ver_default = params.get("system_version", "1.0")
+
+    from backtest.rl.feature_engineer import FEATURE_GROUPS
+    fg_keys = list(FEATURE_GROUPS.keys())
+    fg_labels = [FEATURE_GROUPS[k]["label"] for k in fg_keys]
+    fg_map = dict(zip(fg_labels, fg_keys))
+    orig_fgs = params.get("feature_groups", [])
+    orig_labels = [lb for lb, k in fg_map.items() if k in orig_fgs]
+
+    with st.form(key=f"retrain_rl_{tid}", clear_on_submit=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            n_episodes = st.number_input("Episode 数", value=int(dqn.get("n_episodes", 64)), min_value=1)
+            lr = st.number_input("学习率 lr", value=float(dqn.get("lr", 1e-5)), format="%.6f")
+        with col2:
+            gamma = st.number_input("折扣因子 γ", value=float(dqn.get("gamma", 0.98)), min_value=0.0, max_value=1.0, format="%.3f")
+            hidden = st.number_input("隐藏层大小", value=int(dqn.get("hidden", 128)), min_value=16)
+        with col3:
+            batch_size = st.number_input("Batch Size", value=int(dqn.get("batch_size", 200)), min_value=16)
+            epsilon_decay = st.number_input("Epsilon Decay", value=int(dqn.get("epsilon_decay", 500)), min_value=50)
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            reward_window = st.number_input("波动率窗口", value=int(dqn.get("reward_window", 63)), min_value=5)
+        with col2:
+            vol_penalty = st.number_input("波动惩罚系数", value=float(dqn.get("vol_penalty_coef", 0.1)), format="%.2f")
+        with col3:
+            dd_penalty = st.number_input("回撤惩罚系数", value=float(dqn.get("dd_penalty_coef", 0.5)), format="%.2f")
+
+        sys_ver_options = ["basic", "1.0", "2.0"]
+        sys_ver_idx = sys_ver_options.index(sys_ver_default) if sys_ver_default in sys_ver_options else 1
+        sys_ver = st.selectbox("系统版本", sys_ver_options, index=sys_ver_idx)
+        selected_labels = st.multiselect("特征组", fg_labels, default=orig_labels)
+        selected_fgs = [fg_map[lb] for lb in selected_labels]
+
+        col1, col2 = st.columns(2)
+        with col1:
+            commission = st.number_input("佣金率", value=float(fee.get("commission_rate", 0.00025)), format="%.5f")
+            stamp = st.number_input("印花税率", value=float(fee.get("stamp_duty", 0.001)), format="%.4f")
+        with col2:
+            min_comm = st.number_input("最低佣金", value=float(fee.get("min_commission", 5.0)))
+            capital = st.number_input("初始资金", value=float(fee.get("initial_capital", 100000.0)))
+
+        st.caption(f"📦 数据来源: {symbol} ｜ 训练集 Rows: {len(params.get('df_train', []))}")
+
+        submitted = st.form_submit_button("🚀 提交训练任务", type="primary")
+        if submitted:
+            new_dqn = dict(dqn,
+                n_episodes=n_episodes, lr=lr, gamma=gamma,
+                hidden=hidden, batch_size=batch_size,
+                epsilon_decay=epsilon_decay,
+                reward_window=reward_window,
+                vol_penalty_coef=vol_penalty,
+                dd_penalty_coef=dd_penalty,
+            )
+            new_fee = dict(fee,
+                commission_rate=commission, min_commission=min_comm,
+                stamp_duty=stamp, initial_capital=capital,
+            )
+            new_params = dict(params,
+                system_version=sys_ver,
+                feature_groups=selected_fgs,
+                dqn_params=new_dqn,
+                fee_params=new_fee,
+            )
+            from ui.rl_training import _rl_train_task
+            new_tid = mgr.submit("RL训练", new_params, _rl_train_task, args=(new_params,))
+            st.success(f"✅ 新训练任务已提交 (ID: {new_tid[:8]}...)")
+            st.session_state.pop(f"retrain_expand_{tid}", None)
+            st.rerun()
+
+
+def _render_hrl_retrain_form(task: dict, mgr: TaskManager):
+    tid = task.get("_id", "")
+    params = task.get("params")
+    if params is None:
+        st.info("任务参数已过期（页面刷新后丢失），请在 🧠 分层RL 页面手动配置新的训练")
+        return
+
+    ep = params.get("n_episodes", 64)
+
+    with st.form(key=f"retrain_hrl_{tid}", clear_on_submit=True):
+        st.markdown("**🧠 PPO 参数**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            ppo_lr = st.number_input("PPO 学习率", value=float(params.get("ppo_lr", 3e-4)), format="%.6f")
+            clip_epsilon = st.number_input("Clip ε", value=float(params.get("clip_epsilon", 0.2)), format="%.2f")
+        with col2:
+            ppo_gamma = st.number_input("PPO γ", value=float(params.get("ppo_gamma", 0.99)), format="%.3f")
+            entropy_beta = st.number_input("熵奖励 β", value=float(params.get("entropy_beta", 0.01)), format="%.3f")
+        with col3:
+            ppo_hidden = st.number_input("PPO 隐藏层", value=int(params.get("ppo_hidden", 128)), min_value=16)
+            n_episodes = st.number_input("Episode 数", value=int(ep), min_value=1)
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            gae_lambda = st.number_input("GAE λ", value=float(params.get("gae_lambda", 0.95)), format="%.2f")
+        with col2:
+            ppo_epochs = st.number_input("PPO Epochs", value=int(params.get("ppo_epochs", 10)), min_value=1)
+        with col3:
+            ppo_update_freq = st.number_input("PPO 更新频率", value=int(params.get("ppo_update_freq", 128)), min_value=1)
+
+        st.markdown("**🤖 DQN 参数**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            dqn_lr = st.number_input("DQN 学习率", value=float(params.get("dqn_lr", 1e-5)), format="%.6f")
+            dqn_hidden = st.number_input("DQN 隐藏层", value=int(params.get("dqn_hidden", 128)), min_value=16)
+        with col2:
+            dqn_gamma = st.number_input("DQN γ", value=float(params.get("dqn_gamma", 0.98)), format="%.3f")
+            dqn_batch_size = st.number_input("DQN Batch", value=int(params.get("dqn_batch_size", 200)), min_value=16)
+        with col3:
+            dqn_epsilon_decay = st.number_input("DQN ε Decay", value=int(params.get("dqn_epsilon_decay", 500)), min_value=50)
+
+        st.markdown("**💵 费用与交易参数**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            commission = st.number_input("佣金率", value=float(params.get("commission_rate", 0.00025)), format="%.5f")
+        with col2:
+            capital = st.number_input("初始资金", value=float(params.get("initial_capital", 100000.0)))
+        with col3:
+            trade_fraction = st.number_input("单次交易比例", value=float(params.get("trade_fraction", 0.25)), format="%.2f")
+
+        syms = params.get("selected_symbols", [])
+        st.caption(f"📦 ETF 组合: {', '.join(syms) if syms else '?'}")
+
+        submitted = st.form_submit_button("🚀 提交训练任务", type="primary")
+        if submitted:
+            new_params = dict(params,
+                n_episodes=n_episodes,
+                ppo_lr=ppo_lr, ppo_gamma=ppo_gamma,
+                clip_epsilon=clip_epsilon, entropy_beta=entropy_beta,
+                gae_lambda=gae_lambda, ppo_hidden=ppo_hidden,
+                ppo_epochs=ppo_epochs, ppo_update_freq=ppo_update_freq,
+                dqn_lr=dqn_lr, dqn_gamma=dqn_gamma,
+                dqn_hidden=dqn_hidden,
+                dqn_batch_size=dqn_batch_size,
+                dqn_epsilon_decay=dqn_epsilon_decay,
+                commission_rate=commission,
+                initial_capital=capital,
+                trade_fraction=trade_fraction,
+            )
+            from ui.hierarchical_rl import _hrl_train_task
+            new_tid = mgr.submit("HRL训练", new_params, _hrl_train_task, args=(new_params,))
+            st.success(f"✅ 新训练任务已提交 (ID: {new_tid[:8]}...)")
+            st.session_state.pop(f"retrain_expand_{tid}", None)
+            st.rerun()
+
+
 @st.fragment(run_every=1.0)
 def _render_running_detail(task: dict, mgr: TaskManager, tid: str):
     live = mgr.get_task(tid)
@@ -288,6 +447,16 @@ def _render_detail(task: dict, mgr: TaskManager):
         if pdata:
             st.subheader("📈 训练过程")
             _render_progress_chart(pdata)
+
+        # ── 重新训练 ──
+        st.divider()
+        expand_key = f"retrain_expand_{tid}"
+        expand_val = st.session_state.get(expand_key, False)
+        with st.expander("🔄 重新训练", expanded=expand_val):
+            if task["type"] == "RL训练":
+                _render_rl_retrain_form(task, mgr)
+            elif task["type"] == "HRL训练":
+                _render_hrl_retrain_form(task, mgr)
 
     elif status == TaskStatus.FAILED.value:
         st.error(f"训练失败: {task.get('error', '未知错误')}")
