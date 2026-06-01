@@ -1,6 +1,6 @@
-"""数据获取模块 - 基于 AKShare 封装
+"""数据获取模块 - 基于 AKShare / 东方财富 REST API
 
-支持: A股个股, ETF基金, LOF基金, 开放式基金, 指数
+支持: A股个股, ETF基金, LOF基金, 开放式基金, 指数, 境外资产(美股/ETF/商品)
 """
 
 import time
@@ -16,7 +16,7 @@ import akshare as ak
 from data.cache import cache_key, read_cache, write_cache, filter_by_date, clear_expired
 from data.asset_config import ASSET_TYPE_CONFIG
 
-AssetType = Literal["stock", "etf", "lof", "open_fund", "index"]
+AssetType = Literal["stock", "etf", "lof", "open_fund", "index", "us"]
 
 # ── HTTP 会话 ──
 _SESSION = requests.Session()
@@ -316,7 +316,68 @@ def fetch_index_history(
 
 
 # ══════════════════════════════════════════
-#  6.  统一入口
+#  6.  境外资产 (yfinance)
+# ══════════════════════════════════════════
+
+_US_EXCHANGE_PREFIXES = ["105", "106", "107"]
+
+
+def _em_us_kline(secid: str, period: str, adjust: str,
+                 start: str, end: str) -> pd.DataFrame:
+    period_map = {"daily": "101", "weekly": "102", "monthly": "103"}
+    adjust_map = {"qfq": "1", "hfq": "2", "": "0"}
+    url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    params = {
+        "fields1": "f1,f2,f3,f4,f5,f6",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+        "ut": "7eea3edcaed734bea9cbfc24409ed989",
+        "klt": period_map.get(period, "101"),
+        "fqt": adjust_map.get(adjust, "0"),
+        "secid": secid,
+        "beg": start,
+        "end": end,
+    }
+    data = _req_json(url, params)
+    return _parse_em_klines(data, secid)
+
+
+def fetch_us_history(
+    symbol: str,
+    start_date: str = "20000101",
+    end_date: Optional[str] = None,
+    period: Literal["daily", "weekly", "monthly"] = "daily",
+    adjust: Literal["", "qfq", "hfq"] = "qfq",
+) -> pd.DataFrame:
+    if end_date is None:
+        end_date = datetime.now().strftime("%Y%m%d")
+
+    ck = cache_key("us", symbol, period)
+    cached = read_cache(ck)
+    if cached is not None:
+        return filter_by_date(cached, start_date, end_date)
+
+    symbol = symbol.upper()
+    errs = []
+    for prefix in _US_EXCHANGE_PREFIXES:
+        try:
+            full = _em_us_kline(f"{prefix}.{symbol}", period, adjust,
+                                start=start_date, end=end_date)
+            if not full.empty:
+                write_cache(ck, full)
+                return filter_by_date(full, start_date, end_date)
+        except Exception as e:
+            errs.append(f"{prefix}: {e}")
+            continue
+
+    raise ConnectionError(
+        f"无法获取 {symbol} 的数据。\n已尝试 {_US_EXCHANGE_PREFIXES} 均失败:\n"
+        + "\n".join(errs)
+        + "\n常见代码: QQQ, TQQQ, GLD, SPY, MSFT, AAPL"
+    )
+
+
+# ══════════════════════════════════════════
+#  7.  统一入口
 # ══════════════════════════════════════════
 
 def fetch_history(
@@ -344,6 +405,7 @@ def fetch_history(
                 "etf": fetch_etf_history,
                 "lof": fetch_lof_history,
                 "index": fetch_index_history,
+                "us": fetch_us_history,
             }.get(ft)
             if f is None:
                 return None
@@ -354,6 +416,12 @@ def fetch_history(
     result = _try_fetch(asset_type)
     if result is not None and not result.empty:
         return result
+
+    _NO_FALLBACK = {"us"}
+    if asset_type in _NO_FALLBACK:
+        raise ConnectionError(
+            f"无法获取 {symbol} 的数据。请确认代码在 Yahoo Finance 中存在。"
+        )
 
     fallback_order = ["open_fund", "etf", "lof", "stock", "index"]
     for ft in fallback_order:

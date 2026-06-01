@@ -29,4 +29,9 @@ ASSET_TYPE_CONFIG = {
         "price_label": "close",
         "search_hint": "输入指数代码, 如 sh000001, sh000300",
     },
+    "us": {
+        "label": "境外资产 (美股/ETF/商品)",
+        "price_label": "Close",
+        "search_hint": "输入 Yahoo Finance 代码, 如 QQQ, TQQQ, GLD, GC=F",
+    },
 }

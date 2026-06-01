@@ -19,7 +19,7 @@ def render_symbol_manager():
             all_tags.add(t)
     all_tags = sorted(all_tags)
 
-    filter_type = st.selectbox("资产类型过滤", ["全部", "stock", "etf", "lof", "open_fund", "index"])
+    filter_type = st.selectbox("资产类型过滤", ["全部", "stock", "etf", "lof", "open_fund", "index", "us"])
     filter_tag = st.selectbox("标签过滤", ["全部"] + all_tags)
 
     st.markdown("#### ➕ 添加新代码")
@@ -28,7 +28,7 @@ def render_symbol_manager():
         with ai1:
             new_symbol = st.text_input("代码", placeholder="如 510300", key="add_symbol")
         with ai2:
-            new_asset_type = st.selectbox("资产类型", ["etf", "stock", "lof", "open_fund", "index"], key="add_type")
+            new_asset_type = st.selectbox("资产类型", ["etf", "stock", "lof", "open_fund", "index", "us"], key="add_type")
         with ai3:
             new_tags_str = st.text_input("标签 (逗号分隔)", placeholder="宽基ETF, 科技", key="add_tags")
         with ai4:

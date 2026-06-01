@@ -394,12 +394,12 @@ if needs_sidebar_symbol:
     with col1:
         start_date = col1.date_input(
             "开始日期", value=date(today.year - 5, 1, 1),
-            min_value=date(1990, 1, 1), max_value=today,
+            min_value=date(1970, 1, 1), max_value=today,
         )
     with col2:
         end_date = col2.date_input(
             "结束日期", value=today,
-            min_value=date(1990, 1, 1), max_value=today,
+            min_value=date(1970, 1, 1), max_value=today,
         )
 else:
     asset_type = "etf"
@@ -474,6 +474,6 @@ st.markdown("---")
 st.markdown(
     '<p class="footer-caption">'
     "⚠️ 本工具仅供学习研究使用，回测历史收益不代表未来表现，不构成任何投资建议。"
-    "数据来源：AKShare（东方财富）</p>",
+    "数据来源：AKShare / 东方财富（A股）</p>",
     unsafe_allow_html=True,
 )

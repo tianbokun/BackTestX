@@ -16,6 +16,22 @@ STATUS_EMOJI = {
 }
 
 
+def _ensure_trades(trades):
+    if isinstance(trades, pd.DataFrame):
+        return trades
+    if isinstance(trades, list):
+        return pd.DataFrame(trades) if trades else pd.DataFrame()
+    return pd.DataFrame()
+
+
+def _ensure_dates(dates):
+    if isinstance(dates, pd.DatetimeIndex):
+        return dates
+    if isinstance(dates, list):
+        return pd.DatetimeIndex([pd.Timestamp(d) for d in dates])
+    return dates
+
+
 def _render_rl_result(result: dict):
     dqn = result["result_dqn"]
     bh = result["result_bh"]
@@ -35,7 +51,7 @@ def _render_rl_result(result: dict):
     ])
     st.dataframe(comp, width='stretch', hide_index=True)
 
-    test_idx = meta.get("df_test_index", dqn.get("dates"))
+    test_idx = _ensure_dates(meta.get("df_test_index", dqn.get("dates")))
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=test_idx, y=dqn["equity_curve"],
@@ -55,8 +71,9 @@ def _render_rl_result(result: dict):
     )
     st.plotly_chart(fig, width='stretch')
 
-    if not dqn["trades"].empty:
-        trades = dqn["trades"].copy()
+    trades = _ensure_trades(dqn.get("trades"))
+    if not trades.empty:
+        trades = trades.copy()
         if "日期" in trades.columns:
             trades["日期"] = trades["日期"].dt.strftime("%Y-%m-%d")
         st.markdown("**📝 交易记录**")
@@ -97,7 +114,7 @@ def _render_hrl_result(result: dict):
     comp = pd.DataFrame(rows)
     st.dataframe(comp, width='stretch', hide_index=True)
 
-    dates = test.get("dates", [])
+    dates = _ensure_dates(test.get("dates", []))
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=dates, y=test["equity_curve"],
@@ -117,9 +134,12 @@ def _render_hrl_result(result: dict):
     ]:
         dca = benchmarks.get(dca_key)
         if dca is not None and "total_value_series" in dca:
-            dca_curve = dca["total_value_series"].reindex(
-                pd.DatetimeIndex(dates)
-            ).ffill().fillna(capital).values
+            tvs = dca["total_value_series"]
+            dca_curve = (
+                tvs.reindex(pd.DatetimeIndex(dates)).ffill().fillna(capital).values
+                if isinstance(tvs, (pd.Series, pd.DataFrame))
+                else tvs
+            )
             fig.add_trace(go.Scatter(
                 x=dates, y=dca_curve,
                 mode="lines", name=dca_label,
@@ -149,9 +169,10 @@ def _render_hrl_result(result: dict):
         )
         st.plotly_chart(fig2, width='stretch')
 
-    if "trade_log" in test and not test["trade_log"].empty:
+    trade_log = _ensure_trades(test.get("trade_log"))
+    if not trade_log.empty:
         with st.expander("📝 交易记录", expanded=False):
-            st.dataframe(test["trade_log"], width='stretch', hide_index=True)
+            st.dataframe(trade_log, width='stretch', hide_index=True)
 
 
 @st.fragment(run_every=1.0)
@@ -170,43 +191,48 @@ def _render_running_detail(task: dict, mgr: TaskManager, tid: str):
         st.rerun()
 
     pdata = mgr.get_progress_data(tid)
-    if pdata and len(pdata) > 1:
-        df = pd.DataFrame(pdata, columns=["ep", "value"])
-        is_rl = task["type"] == "RL训练"
-        ylabel = "Loss" if is_rl else "Reward"
-        best_idx = df["value"].idxmin() if is_rl else df["value"].idxmax()
-        best_val = df.loc[best_idx, "value"]
-        best_ep = df.loc[best_idx, "ep"]
+    _render_progress_chart(pdata, task["type"])
 
-        window = max(5, len(df) // 10)
-        df["trend"] = df["value"].rolling(window=window, min_periods=1).mean()
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=df["ep"], y=df["value"],
-            mode="lines", name="原始",
-            line=dict(color="#94a3b8", width=1),
-            opacity=0.5,
-        ))
-        fig.add_trace(go.Scatter(
-            x=df["ep"], y=df["trend"],
-            mode="lines", name="趋势",
-            line=dict(color="#ef4444", width=2.5),
-        ))
-        fig.add_trace(go.Scatter(
-            x=[best_ep], y=[best_val],
-            mode="markers+text",
-            name="最优",
-            marker=dict(color="#22c55e", size=12, symbol="star"),
-            text=[f"<b>{ylabel} {best_val:.4f}</b>"],
-            textposition="top center",
-            textfont=dict(color="#22c55e", size=12),
-        ))
-        fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10),
-                          xaxis_title="Episode", yaxis_title=ylabel,
-                          showlegend=True)
-        st.plotly_chart(fig, width='stretch')
-        st.caption(f"🏆 最优 {ylabel}: 第 {best_ep} episode, {ylabel}={best_val:.4f}")
+def _render_progress_chart(pdata, task_type: str):
+    if not pdata or len(pdata) < 2:
+        return
+    df = pd.DataFrame(pdata, columns=["ep", "value"])
+    is_rl = task_type == "RL训练"
+    ylabel = "Loss" if is_rl else "Reward"
+    best_idx = df["value"].idxmin() if is_rl else df["value"].idxmax()
+    best_val = df.loc[best_idx, "value"]
+    best_ep = int(df.loc[best_idx, "ep"])
+
+    window = max(5, len(df) // 10)
+    df["trend"] = df["value"].rolling(window=window, min_periods=1).mean()
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df["ep"], y=df["value"],
+        mode="lines", name="原始",
+        line=dict(color="#94a3b8", width=1),
+        opacity=0.5,
+    ))
+    fig.add_trace(go.Scatter(
+        x=df["ep"], y=df["trend"],
+        mode="lines", name="趋势",
+        line=dict(color="#ef4444", width=2.5),
+    ))
+    fig.add_trace(go.Scatter(
+        x=[best_ep], y=[best_val],
+        mode="markers+text",
+        name="最优",
+        marker=dict(color="#22c55e", size=12, symbol="star"),
+        text=[f"<b>{ylabel} {best_val:.4f}</b>"],
+        textposition="top center",
+        textfont=dict(color="#22c55e", size=12),
+    ))
+    fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10),
+                      xaxis_title="Episode", yaxis_title=ylabel,
+                      showlegend=True)
+    st.plotly_chart(fig, width='stretch')
+    st.caption(f"🏆 最优 {ylabel}: 第 {best_ep} episode, {ylabel}={best_val:.4f}")
 
 
 def _render_detail(task: dict, mgr: TaskManager):
@@ -229,6 +255,11 @@ def _render_detail(task: dict, mgr: TaskManager):
                 _render_rl_result(result)
             elif task["type"] == "HRL训练":
                 _render_hrl_result(result)
+
+        pdata = task.get("_progress_data") or mgr.get_progress_data(tid)
+        if pdata:
+            st.subheader("📈 训练过程")
+            _render_progress_chart(pdata, task["type"])
 
     elif status == TaskStatus.FAILED.value:
         st.error(f"训练失败: {task.get('error', '未知错误')}")

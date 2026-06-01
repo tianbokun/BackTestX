@@ -14,6 +14,7 @@ from data.fetcher import (
     fetch_lof_history,
     fetch_open_fund_nav,
     fetch_index_history,
+    fetch_us_history,
     get_price_series,
     get_etf_list,
     get_open_fund_list,

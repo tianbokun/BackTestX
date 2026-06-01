@@ -150,6 +150,14 @@ class SymbolRegistry:
                         name = str(row.iloc[0]["value"])
             except Exception:
                 pass
+        elif asset_type == "us":
+            try:
+                import yfinance as yf
+                ticker = yf.Ticker(symbol.strip())
+                info = ticker.info
+                name = info.get("shortName") or info.get("longName") or symbol.strip()
+            except Exception:
+                pass
         if not name:
             name = symbol.strip()
 
