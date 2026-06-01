@@ -5,7 +5,6 @@ Streamlit Web UI
 """
 
 import sys
-import signal
 import atexit
 from pathlib import Path
 from datetime import date
@@ -25,16 +24,18 @@ from ui.symbol_manager import render_symbol_manager
 from ui.task_manager import render_task_manager
 
 
-def _signal_handler(signum, frame):
-    """Graceful shutdown on SIGTERM/SIGINT."""
-    if signum == signal.SIGTERM:
-        signal.alarm(5)
-    from backtest.rl.task_manager import TaskManager
-    TaskManager()._graceful_shutdown()
+# ══════════════════════════════════════════════════════════════
+#  Graceful Shutdown Registration
+# ══════════════════════════════════════════════════════════════
+
+def _register_shutdown():
+    """Register graceful shutdown handler."""
+    atexit.register(lambda: TaskManager()._graceful_shutdown())
 
 
-signal.signal(signal.SIGTERM, _signal_handler)
-signal.signal(signal.SIGINT, _signal_handler)
+from backtest.rl.task_manager import TaskManager
+
+_register_shutdown()
 
 
 # ══════════════════════════════════════════════════════════════
