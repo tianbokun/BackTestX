@@ -198,6 +198,11 @@ class TaskManager:
                 def cancel_check():
                     return self._cancel_events[tid].is_set()
                 result = target_fn(*args, task_id=tid, cancel_check=cancel_check)
+
+                # ── Auto-save model to disk (survives page refresh) ──
+                if isinstance(result, dict) and result.get("agent") is not None and hasattr(result["agent"], "save"):
+                    _save_auto_model(result, tid, self._tasks)
+
                 if self._cancel_events[tid].is_set():
                     if result is not None:
                         self._tasks[tid]["status"] = TaskStatus.EARLY_STOPPED.value
@@ -252,3 +257,62 @@ class TaskManager:
             if task_id not in self._progress_buffers:
                 self._progress_buffers[task_id] = []
             self._progress_buffers[task_id].append(progress_data)
+
+
+def _save_auto_model(result: dict, tid: str, tasks: dict):
+    from datetime import datetime
+    from pathlib import Path
+    from backtest.rl.dqn_agent import DQNAgent
+    from backtest.rl.hierarchical_trainer import HierarchicalTrainer
+
+    agent = result["agent"]
+    save_dir = Path("saved_models/rl")
+    save_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    models_saved = {}
+
+    try:
+        if isinstance(agent, DQNAgent):
+            meta = result.get("meta") or {}
+            symbol = meta.get("symbol", "unknown")
+            sv = meta.get("system_version", "1.0")
+            base = f"{symbol}_{sv}_auto_{tid[:8]}_{ts}"
+
+            path_final = str(save_dir / f"{base}.pt")
+            agent.save(path_final, {
+                "symbol": symbol, "system_version": sv,
+                "feature_groups": meta.get("feature_groups", []),
+                "train_start": meta.get("train_start", ""),
+                "train_end": meta.get("train_end", ""),
+                "test_return": result.get("result_dqn", {}).get("total_return_pct", 0),
+                "sharpe": result.get("result_dqn", {}).get("sharpe_ratio", 0),
+            })
+            models_saved["最终权重 (自动)"] = path_final
+
+            agent_best = result.get("agent_best")
+            if agent_best is not None:
+                dqn_best = result.get("result_dqn_best", {})
+                path_best = str(save_dir / f"{base}_best.pt")
+                agent_best.save(path_best, {
+                    "symbol": symbol, "system_version": sv,
+                    "feature_groups": meta.get("feature_groups", []),
+                    "train_start": meta.get("train_start", ""),
+                    "train_end": meta.get("train_end", ""),
+                    "test_return": dqn_best.get("total_return_pct", 0),
+                    "sharpe": dqn_best.get("sharpe_ratio", 0),
+                })
+                models_saved["最佳episode权重 (自动)"] = path_best
+
+        elif isinstance(agent, HierarchicalTrainer):
+            syms = result.get("selected_symbols", [])
+            label = "_".join(str(s)[:6] for s in syms[:3]) if syms else "hrl"
+            base = f"{label}_auto_{tid[:8]}_{ts}"
+            path_main = str(save_dir / f"{base}.pt")
+            agent.save(path_main)
+            models_saved["HRL模型 (自动)"] = path_main
+
+        if models_saved:
+            tasks[tid]["auto_saved_models"] = models_saved
+    except Exception:
+        import traceback
+        traceback.print_exc()

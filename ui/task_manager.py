@@ -36,7 +36,17 @@ def _ensure_dates(dates):
     return dates
 
 
-def _render_rl_save(result: dict):
+def _render_rl_save(result: dict, task: dict = None):
+    auto = (task or {}).get("auto_saved_models", {})
+    if auto:
+        st.subheader("💾 保存模型")
+        for label, path in auto.items():
+            p = Path(path)
+            st.code(f"{p.name}  ({p.parent})", language="")
+            st.caption(f"✅ 已自动保存为 {label}")
+        st.caption("可在左侧「已保存模型」中加载使用")
+        return
+
     agent = result.get("agent")
     if agent is None:
         st.info("💡 模型对象仅在训练会话中可用（页面刷新后丢失），请在此时保存")
@@ -78,7 +88,17 @@ def _render_rl_save(result: dict):
         st.rerun()
 
 
-def _render_hrl_save(result: dict):
+def _render_hrl_save(result: dict, task: dict = None):
+    auto = (task or {}).get("auto_saved_models", {})
+    if auto:
+        st.subheader("💾 保存模型")
+        for label, path in auto.items():
+            p = Path(path)
+            st.code(f"{p.name}  ({p.parent})", language="")
+            st.caption(f"✅ 已自动保存为 {label}")
+        st.caption("可在左侧「已保存模型」中加载使用")
+        return
+
     trainer = result.get("agent")
     if trainer is None:
         st.info("💡 模型对象仅在训练会话中可用（页面刷新后丢失），请在此时保存")
@@ -97,7 +117,7 @@ def _render_hrl_save(result: dict):
         st.rerun()
 
 
-def _render_rl_result(result: dict):
+def _render_rl_result(result: dict, task: dict = None):
     dqn = result["result_dqn"]
     dqn_best = result.get("result_dqn_best")
     bh = result["result_bh"]
@@ -167,10 +187,10 @@ def _render_rl_result(result: dict):
                 trades["日期"] = trades["日期"].dt.strftime("%Y-%m-%d")
             st.dataframe(trades, width='stretch', hide_index=True)
 
-    _render_rl_save(result)
+    _render_rl_save(result, task)
 
 
-def _render_hrl_result(result: dict):
+def _render_hrl_result(result: dict, task: dict = None):
     test = result["test_result"]
     benchmarks = result.get("benchmarks", {})
     capital = result.get("capital", 100000.0)
@@ -264,7 +284,7 @@ def _render_hrl_result(result: dict):
         with st.expander("📝 交易记录", expanded=False):
             st.dataframe(trade_log, width='stretch', hide_index=True)
 
-    _render_hrl_save(result)
+    _render_hrl_save(result, task)
 
 
 def _refetch_rl_data(meta: dict) -> dict:
@@ -644,9 +664,9 @@ def _render_detail(task: dict, mgr: TaskManager):
         if result:
             st.subheader(f"📊 {task['type']} 详细结果")
             if task["type"] == "RL训练":
-                _render_rl_result(result)
+                _render_rl_result(result, task)
             elif task["type"] == "HRL训练":
-                _render_hrl_result(result)
+                _render_hrl_result(result, task)
 
         pdata = task.get("_progress_data") or mgr.get_progress_data(tid)
         if pdata:
