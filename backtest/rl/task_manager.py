@@ -5,10 +5,6 @@ from datetime import datetime
 from pathlib import Path
 from enum import Enum
 import atexit
-import signal
-
-import numpy as np
-import pandas as pd
 
 TASKS_FILE = Path("tasks_registry.json")
 MAX_CONCURRENT = 3
@@ -46,19 +42,7 @@ class TaskManager:
         self._cancel_events: dict[str, threading.Event] = {}
         self._sem = threading.Semaphore(MAX_CONCURRENT)
         self._load()
-        self._register_shutdown_handlers()
-
-    def _register_shutdown_handlers(self):
-        """Register signal handlers for graceful shutdown."""
         atexit.register(self._graceful_shutdown)
-        signal.signal(signal.SIGTERM, self._signal_handler)
-        signal.signal(signal.SIGINT, self._signal_handler)
-
-    def _signal_handler(self, signum, frame):
-        """Handle termination signals."""
-        if signum == signal.SIGTERM:
-            signal.alarm(5)
-        self._graceful_shutdown()
 
     def _graceful_shutdown(self):
         """Cancel all running tasks and persist to disk."""

@@ -5,6 +5,8 @@ Streamlit Web UI
 """
 
 import sys
+import signal
+import atexit
 from pathlib import Path
 from datetime import date
 
@@ -22,6 +24,17 @@ from ui.hierarchical_rl import render_hierarchical_rl
 from ui.symbol_manager import render_symbol_manager
 from ui.task_manager import render_task_manager
 
+
+def _signal_handler(signum, frame):
+    """Graceful shutdown on SIGTERM/SIGINT."""
+    if signum == signal.SIGTERM:
+        signal.alarm(5)
+    from backtest.rl.task_manager import TaskManager
+    TaskManager()._graceful_shutdown()
+
+
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT, _signal_handler)
 
 
 # ══════════════════════════════════════════════════════════════
