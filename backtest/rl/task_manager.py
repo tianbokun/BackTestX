@@ -4,6 +4,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from enum import Enum
+import atexit
+import signal
 
 import numpy as np
 import pandas as pd
@@ -44,6 +46,29 @@ class TaskManager:
         self._cancel_events: dict[str, threading.Event] = {}
         self._sem = threading.Semaphore(MAX_CONCURRENT)
         self._load()
+        self._register_shutdown_handlers()
+
+    def _register_shutdown_handlers(self):
+        """Register signal handlers for graceful shutdown."""
+        atexit.register(self._graceful_shutdown)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
+
+    def _signal_handler(self, signum, frame):
+        """Handle termination signals."""
+        if signum == signal.SIGTERM:
+            signal.alarm(5)
+        self._graceful_shutdown()
+
+    def _graceful_shutdown(self):
+        """Cancel all running tasks and persist to disk."""
+        for tid, task in list(self._tasks.items()):
+            if task.get("status") == TaskStatus.RUNNING.value:
+                self._cancel_events[tid].set()
+                task["status"] = TaskStatus.EARLY_STOPPED.value
+                task["error"] = "服务重启，自动早停"
+                task["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._flush()
 
     # ── Persistence ──
 
