@@ -1,4 +1,3 @@
-import threading
 from pathlib import Path
 from datetime import datetime
 
@@ -10,18 +9,12 @@ import plotly.graph_objects as go
 from data_fetcher import add_premium_rate, ensure_ohlc
 from backtest.rl.trainer import (
     train_dqn, evaluate, run_bh_baseline,
-    hyperparam_search,
 )
 from backtest.rl.dqn_agent import DQNAgent
 from backtest.rl.feature_engineer import FEATURE_GROUPS, DEFAULT_FEATURE_GROUPS
 from data.symbol_registry import SymbolRegistry
 from backtest.rl.task_manager import TaskManager, TaskStatus
 from ui.rl_signal import render_rl_signal
-
-# ── Threading globals for cancelable HP search ──
-_hp_cancel_event = threading.Event()
-_hp_output: dict = {}
-_hp_progress: dict = {}
 
 
 def _rl_train_task(params, task_id=None, cancel_check=None):
@@ -64,6 +57,77 @@ def _rl_train_task(params, task_id=None, cancel_check=None):
         "result_dqn_best": result_dqn_best,
         "result_bh": result_bh,
         "meta": params["meta"],
+    }
+
+
+def _hyperparam_search_task(params, task_id=None, cancel_check=None):
+    from backtest.rl.trainer import hyperparam_search, train_dqn, evaluate, run_bh_baseline
+    mgr = TaskManager()
+
+    df_hp = params["df_hp"]
+    df_train = params["df_train"]
+    df_val = params["df_val"]
+    sv = params["system_version"]
+    fg = params["feature_groups"]
+    fee = params["fee_params"]
+    meta = params["meta"]
+
+    total_combos = 324  # 4(lr) × 3(gamma) × 3(hidden) × 3(n_episodes) × 3(epsilon_decay)
+    n_folds = 3
+    total_folds = total_combos * n_folds
+
+    def _hp_fold_callback(ci, total, fi, nf, p_params, fold_sharpe):
+        folds_done = ci * nf + fi + 1
+        mgr.update_progress(task_id, folds_done / total_folds)
+
+    best_scores = []
+    def _hp_combo_callback(ci, total, best_params, best_score):
+        if best_score > -999:
+            best_scores.append(best_score)
+        current_best = max(best_scores) if best_scores else 0
+        mgr.update_progress(task_id, min((ci + 1) * n_folds / total_folds, 0.99),
+                            progress_data=(ci, current_best))
+
+    hp_result = hyperparam_search(
+        df=df_hp, system_version=sv, feature_groups=fg,
+        progress_callback=None,
+        combo_callback=_hp_combo_callback,
+        fold_callback=_hp_fold_callback,
+        cancel_check=cancel_check,
+        reward_window=meta.get("reward_window", 63),
+        vol_penalty_coef=meta.get("vol_penalty_coef", 0.1),
+        dd_penalty_coef=meta.get("dd_penalty_coef", 0.5),
+        commission_rate=fee.get("commission_rate", 0.00025),
+        min_commission=fee.get("min_commission", 5.0),
+        stamp_duty=fee.get("stamp_duty", 0.001),
+        initial_capital=fee.get("initial_capital", 100000.0),
+    )
+
+    was_cancelled = cancel_check()
+    if was_cancelled and hp_result.get("best_params") is None:
+        return None
+
+    bp = hp_result.get("best_params")
+    val_result = bh_val = agent = None
+    if bp is not None and not was_cancelled:
+        agent, _, _ = train_dqn(
+            df_train, system_version=sv, feature_groups=fg,
+            n_episodes=bp["n_episodes"], lr=bp["lr"], gamma=bp["gamma"],
+            hidden=bp["hidden"], epsilon_decay=bp["epsilon_decay"],
+            progress_callback=None, cancel_check=cancel_check,
+            **fee,
+        )
+        val_result = evaluate(agent, df_val, system_version=sv,
+                              feature_groups=fg, **fee)
+        bh_val = run_bh_baseline(df_val, initial_capital=fee["initial_capital"])
+
+    return {
+        "hp_result": hp_result,
+        "agent": agent,
+        "agent_best": None,
+        "result_dqn": val_result,
+        "result_bh": bh_val,
+        "meta": meta,
     }
 
 
@@ -268,206 +332,34 @@ def render_rl_training(end_date, adjust):
         total_days = len(df_hp)
         st.info(f"超参搜索窗口: {str(df_hp.index[0])[:10]} ~ {str(df_hp.index[-1])[:10]} ({total_days} 行)")
 
-        # Reset threading globals
-        _hp_cancel_event.clear()
-        _hp_output.clear()
-        _hp_progress.clear()
-        _hp_progress["_status"] = "running"
-
         sv = system_version
         fg = list(selected_groups)
         fp = dict(fee_params)
 
-        import time as _time_mod
-        _hp_start = _time_mod.time()
-
-        def _hp_fold_callback(ci, total, fi, nf, params, fold_sharpe):
-            _hp_progress["combo_idx"] = ci
-            _hp_progress["total_combos"] = total
-            _hp_progress["fold_idx"] = fi
-            _hp_progress["n_folds"] = nf
-            _hp_progress["params"] = params
-            _hp_progress["fold_sharpe"] = fold_sharpe
-            _hp_progress["elapsed"] = _time_mod.time() - _hp_start
-
-        from collections import deque as _deque
-        _hp_recent = _deque(maxlen=5)
-
-        def _hp_combo_callback(ci, total, best_params, best_score):
-            _hp_progress["combo_idx"] = ci
-            _hp_progress["total_combos"] = total
-            _hp_progress["best_params"] = best_params
-            _hp_progress["best_score"] = best_score
-            _hp_progress["elapsed"] = _time_mod.time() - _hp_start
-            if best_params and best_score > -999:
-                _hp_recent.append((ci, best_score))
-            _hp_progress["recent"] = list(_hp_recent)
-
-        def _run_hp():
-            try:
-                result = hyperparam_search(
-                    df_hp, system_version=sv,
-                    feature_groups=fg,
-                    progress_callback=None,
-                    combo_callback=_hp_combo_callback,
-                    fold_callback=_hp_fold_callback,
-                    cancel_check=_hp_cancel_event.is_set,
-                    reward_window=int(rl_reward_window),
-                    vol_penalty_coef=float(rl_vol_penalty),
-                    dd_penalty_coef=float(rl_dd_penalty),
-                    **fp,
-                )
-                _hp_output["_done"] = True
-                _hp_output.update(result)
-            except Exception as e:
-                _hp_output["_done"] = True
-                _hp_output["_error"] = str(e)
-
-        _hp_thread = threading.Thread(target=_run_hp, daemon=True)
-        _hp_thread.start()
-        st.session_state.hp_running = True
-        st.rerun()
-
-    # ── HP 搜索进度轮询 ──
-    if st.session_state.get("hp_running", False):
-        nf = 3
-        total_combos = 324
-        total_folds = total_combos * nf
-        ci = _hp_progress.get("combo_idx", 0)
-        fi = _hp_progress.get("fold_idx", 0)
-        folds_done = ci * nf + min(fi + 1, nf)
-        elapsed = _hp_progress.get("elapsed", 0.0)
-
-        pct = min(folds_done / max(total_folds, 1), 1.0)
-        st.progress(pct, text=f"超参搜索: {folds_done}/{total_folds} 训练 ({pct*100:.1f}%)")
-
-        stop_col1, stop_col2 = st.columns([1, 5])
-        with stop_col1:
-            if st.button("⏹ 停止搜索", key="hp_stop_btn"):
-                _hp_cancel_event.set()
-                st.info("⏳ 正在等待当前组合完成后停止...")
-                st.rerun()
-        with stop_col2:
-            if _hp_cancel_event.is_set():
-                st.warning("停止中 (当前组合完成后停止)")
-
-        best_score = _hp_progress.get("best_score", -999.0)
-        best_params = _hp_progress.get("best_params")
-        if best_params:
-            p_str = ", ".join(f"{k}={v}" for k, v in sorted(best_params.items()))
-            st.code(f"🏆 当前最优: 夏普={best_score:.4f}\n  参数: {p_str}")
-
-        recent = _hp_progress.get("recent", [])
-        if recent:
-            log_lines = ["最近 5 个最优得分 (更新时):"]
-            for idx, sc in recent:
-                log_lines.append(f"  #{idx+1:>3d}  夏普={sc:+.4f}")
-            st.code("\n".join(log_lines))
-
-        avg_time = elapsed / max(folds_done, 1)
-        remaining = avg_time * (total_folds - folds_done)
-        remaining_str = f"{remaining/60:.0f} 分" if remaining < 3600 else f"{remaining/3600:.1f} 时"
-        st.caption(f"已用 {elapsed/60:.1f} 分 | 预计剩余: ~{remaining_str}")
-
-        done = _hp_output.get("_done", False)
-        error = _hp_output.get("_error")
-
-        if error:
-            st.error(f"超参搜索失败: {error}")
-            st.session_state.hp_running = False
-            st.rerun()
-
-        if done:
-            hp_result = {k: v for k, v in _hp_output.items() if k not in ("_done", "_error")}
-            st.session_state.hp_running = False
-
-            bp = hp_result.get("best_params")
-            bs = hp_result.get("best_score", -999)
-
-            if bp is None:
-                if _hp_cancel_event.is_set():
-                    st.warning("搜索被用户手动停止，显示部分结果")
-                else:
-                    st.error(hp_result.get("error", "搜索失败"))
-                st.stop()
-
-            elapsed_total = hp_result.get("elapsed_sec", 0)
-            st.success(f"✅ 搜索完成! 耗时 {elapsed_total/60:.1f} 分 | "
-                       f"最优: lr={bp['lr']}, gamma={bp['gamma']}, "
-                       f"hidden={bp['hidden']}, n_episodes={bp['n_episodes']}, "
-                       f"epsilon_decay={bp['epsilon_decay']}  |  验证夏普={bs:.4f}")
-
-            st.markdown("### 📊 验证集回测结果 (最优参数)")
-            with st.spinner("正在训练/回测..."):
-                best_agent, _, _ = train_dqn(
-                    df_train, system_version=system_version,
-                    feature_groups=selected_groups,
-                    n_episodes=bp["n_episodes"], lr=bp["lr"], gamma=bp["gamma"],
-                    hidden=bp["hidden"], epsilon_decay=bp["epsilon_decay"],
-                    progress_callback=None, **fee_params,
-                )
-                val_result = evaluate(best_agent, df_val, system_version=system_version,
-                                      feature_groups=selected_groups, **fee_params)
-                bh_val = run_bh_baseline(df_val, initial_capital=rl_capital_val)
-
-            comp_val = pd.DataFrame([
-                {"策略": "DQN", "最终金额": val_result["final_value"],
-                 "收益率%": val_result["total_return_pct"], "夏普比率": val_result["sharpe_ratio"],
-                 "最大回撤%": val_result["max_drawdown_pct"], "交易次数": val_result["num_trades"]},
-                {"策略": "买入持有(BH)", "最终金额": bh_val["final_value"],
-                 "收益率%": bh_val["total_return_pct"], "夏普比率": bh_val["sharpe_ratio"],
-                 "最大回撤%": bh_val["max_drawdown_pct"], "交易次数": 0},
-            ])
-            st.dataframe(comp_val, width='stretch', hide_index=True)
-
-            if not val_result["trades"].empty:
-                with st.expander("📝 交易记录"):
-                    td = val_result["trades"].copy()
-                    td["日期"] = td["日期"].dt.strftime("%Y-%m-%d")
-                    st.dataframe(td, width='stretch', hide_index=True)
-
-            st.session_state.rl_hp_agent = best_agent
-            st.session_state.rl_hp_params = bp
-            st.session_state.rl_hp_score = bs
-            st.rerun()
-
-        else:
-            import time
-            time.sleep(1)
-            st.rerun()
-
-    # ── 保存超参搜索结果 (在 search_btn 块外, 确保持久化) ──
-    if st.session_state.rl_hp_agent is not None:
-        st.markdown("---")
-        st.subheader("💾 保存超参搜索模型")
-        sym = symbol
-        sv = system_version
-        _hp_save_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        _hp_save_default = f"{sym}_hp_{sv}_{_hp_save_ts}"
-        _hp_save_name = st.text_input("模型名称", value=_hp_save_default, key="rl_hp_save_name")
-        save_col1, save_col2 = st.columns([1, 5])
-        with save_col1:
-            if st.button("💾 保存模型", type="primary", key="rl_save_hp_model_btn"):
-                save_path = Path(f"saved_models/rl/{_hp_save_name}.pt")
-                save_path.parent.mkdir(parents=True, exist_ok=True)
-                st.session_state.rl_hp_agent.save(str(save_path), {
-                    "symbol": sym, "system_version": sv,
-                    "feature_groups": selected_groups,
-                    "train_start": str(train_start),
-                    "train_end": str(train_end),
-                    "source": "hyperparam_search",
-                    "sharpe": st.session_state.rl_hp_score,
-                })
-                st.session_state.rl_agent = st.session_state.rl_hp_agent
-                st.session_state.rl_model_info = {
-                    "name": save_path.stem, "path": str(save_path),
-                    "symbol": sym, "system_version": sv,
-                    "feature_groups": selected_groups,
-                }
-                st.session_state.rl_model_just_saved = True
-                st.rerun()
-        with save_col2:
-            st.caption("保存超参搜索得到的最优模型到磁盘，之后可在侧边栏加载使用")
+        hp_params = {
+            "df_hp": df_hp,
+            "df_train": df_train,
+            "df_val": df_val,
+            "system_version": sv,
+            "feature_groups": fg,
+            "fee_params": fp,
+            "meta": {
+                "symbol": symbol,
+                "system_version": sv,
+                "feature_groups": fg,
+                "train_start": str(train_start),
+                "train_end": str(train_end),
+                "val_start": str(val_start),
+                "val_end": str(val_end),
+                "adjust": adjust,
+                "reward_window": int(rl_reward_window),
+                "vol_penalty_coef": float(rl_vol_penalty),
+                "dd_penalty_coef": float(rl_dd_penalty),
+            },
+        }
+        mgr = TaskManager()
+        tid = mgr.submit("超参搜索", hp_params, _hyperparam_search_task, args=(hp_params,))
+        st.success(f"✅ 超参搜索任务已提交 (ID: {tid[:8]}...) 可到「📋 训练任务」查看进度")
 
     # ── 训练 (后台任务) ──
     if run_btn:

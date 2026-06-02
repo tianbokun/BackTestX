@@ -287,6 +287,67 @@ def _render_hrl_result(result: dict, task: dict = None):
     _render_hrl_save(result, task)
 
 
+def _render_hp_result(result: dict, task: dict = None):
+    hp = result.get("hp_result", {})
+    dqn = result.get("result_dqn")
+    bh = result.get("result_bh")
+
+    bp = hp.get("best_params")
+    bs = hp.get("best_score", -999)
+    tc = hp.get("total_combos", 0)
+    nf = hp.get("n_folds", 3)
+    elapsed = hp.get("elapsed_sec", 0)
+
+    st.subheader("🔍 超参搜索结果")
+    st.caption(f"共搜索 {tc} 个组合 × {nf} 折 = {tc * nf} 次训练，耗时 {elapsed/60:.1f} 分")
+
+    if bp:
+        st.success(f"🏆 最优参数 (验证夏普={bs:.4f})")
+        p_str = ", ".join(f"{k}={v}" for k, v in sorted(bp.items()))
+        st.code(p_str, language="")
+    else:
+        st.warning("未找到有效参数组合")
+
+    fold_details = hp.get("fold_details", [])
+    if fold_details:
+        with st.expander("📊 参数组合详情 (Top 10)", expanded=False):
+            sorted_d = sorted(fold_details, key=lambda x: x["avg_score"], reverse=True)
+            rows = []
+            for i, fd in enumerate(sorted_d[:10]):
+                p = fd["params"]
+                rows.append({
+                    "排名": i + 1, "lr": p["lr"], "gamma": p["gamma"],
+                    "hidden": p["hidden"], "n_episodes": p["n_episodes"],
+                    "epsilon_decay": p["epsilon_decay"],
+                    "平均夏普": round(fd["avg_score"], 4),
+                    "各折夏普": ", ".join(f"{s:.4f}" for s in fd["fold_scores"]),
+                })
+            st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+
+    if dqn is not None and bh is not None:
+        st.divider()
+        st.subheader("📊 验证集回测结果 (最优参数)")
+        comp = pd.DataFrame([
+            {"策略": "DQN", "最终金额": dqn["final_value"],
+             "收益率%": dqn["total_return_pct"], "夏普比率": dqn["sharpe_ratio"],
+             "最大回撤%": dqn["max_drawdown_pct"], "交易次数": dqn["num_trades"]},
+            {"策略": "买入持有(BH)", "最终金额": bh["final_value"],
+             "收益率%": bh["total_return_pct"], "夏普比率": bh["sharpe_ratio"],
+             "最大回撤%": bh["max_drawdown_pct"], "交易次数": 0},
+        ])
+        st.dataframe(comp, width='stretch', hide_index=True)
+
+        trades = _ensure_trades(dqn.get("trades"))
+        if not trades.empty:
+            with st.expander("📝 交易记录"):
+                t = trades.copy()
+                if "日期" in t.columns:
+                    t["日期"] = t["日期"].dt.strftime("%Y-%m-%d")
+                st.dataframe(t, width='stretch', hide_index=True)
+
+        _render_rl_save(result, task)
+
+
 def _refetch_rl_data(meta: dict) -> dict:
     from data.symbol_registry import SymbolRegistry
     import pandas as pd
@@ -309,6 +370,27 @@ def _refetch_rl_data(meta: dict) -> dict:
     else:
         df_test = df[df.index > pd.Timestamp(train_end)].copy()
     return {"df_train": df_train, "df_test": df_test, "df_test_index": df_test.index}
+
+
+def _refetch_hp_data(meta: dict) -> dict:
+    from data.symbol_registry import SymbolRegistry
+    import pandas as pd
+
+    symbol = meta.get("symbol", "")
+    adjust = meta.get("adjust", "qfq")
+    train_start = meta.get("train_start", "")
+    train_end = meta.get("train_end", "")
+    val_start = meta.get("val_start", "")
+    val_end = meta.get("val_end", "")
+
+    df = SymbolRegistry.fetch_data(symbol, adjust=adjust)
+    if df is None or df.empty:
+        raise ValueError(f"重新获取 {symbol} 数据失败")
+
+    df_train = df[(df.index >= pd.Timestamp(train_start)) & (df.index <= pd.Timestamp(train_end))].copy()
+    df_val = df[(df.index >= pd.Timestamp(val_start)) & (df.index <= pd.Timestamp(val_end))].copy()
+    df_hp = pd.concat([df_train, df_val]).sort_index()
+    return {"df_hp": df_hp, "df_train": df_train, "df_val": df_val}
 
 
 def _render_rl_retrain_form(task: dict, mgr: TaskManager):
@@ -583,6 +665,138 @@ def _render_hrl_retrain_form(task: dict, mgr: TaskManager):
             st.rerun()
 
 
+def _render_hp_retrain_form(task: dict, mgr: TaskManager):
+    tid = task.get("_id", "")
+
+    done_key = f"retrain_hp_done_{tid}"
+    if done_key in st.session_state:
+        new_tid = st.session_state[done_key]
+        st.success(f"✅ 新训练任务已提交 (ID: {new_tid[:8]}...)")
+        st.caption("可关闭此面板或在「任务列表」中查看进度")
+        if st.button("📋 查看任务详情"):
+            st.session_state.selected_task_id = new_tid
+            st.rerun()
+        return
+
+    params = task.get("params")
+    params_display = task.get("params_display")
+    if params is None and params_display is None:
+        st.info("任务参数已过期，无法重新训练")
+        return
+
+    needs_refetch = params is None
+    src = params if not needs_refetch else params_display
+
+    result = mgr.get_result(tid)
+    hp = result.get("hp_result", {}) if isinstance(result, dict) else {}
+    bp = hp.get("best_params", {})
+    meta = src.get("meta", {})
+    symbol = meta.get("symbol", "?")
+    sys_ver_default = src.get("system_version", "1.0")
+
+    dqn = src.get("dqn_params", {})
+    fee = src.get("fee_params", {})
+
+    if needs_refetch:
+        st.info("🔄 数据从持久化参数重新获取中...")
+
+    with st.form(key=f"retrain_hp_{tid}", clear_on_submit=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            n_episodes = st.number_input("Episode 数", value=int(bp.get("n_episodes", dqn.get("n_episodes", 64))), min_value=1)
+            lr = st.number_input("学习率 lr", value=float(bp.get("lr", dqn.get("lr", 1e-5))), format="%.6f")
+        with col2:
+            gamma = st.number_input("折扣因子 γ", value=float(bp.get("gamma", dqn.get("gamma", 0.98))), min_value=0.0, max_value=1.0, format="%.3f")
+            hidden = st.number_input("隐藏层大小", value=int(bp.get("hidden", dqn.get("hidden", 128))), min_value=16)
+        with col3:
+            batch_size = st.number_input("Batch Size", value=int(dqn.get("batch_size", 200)), min_value=16)
+            epsilon_decay = st.number_input("Epsilon Decay", value=int(bp.get("epsilon_decay", dqn.get("epsilon_decay", 500))), min_value=50)
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            reward_window = st.number_input("波动率窗口", value=int(dqn.get("reward_window", 63)), min_value=5)
+        with col2:
+            vol_penalty = st.number_input("波动惩罚系数", value=float(dqn.get("vol_penalty_coef", 0.1)), format="%.2f")
+        with col3:
+            dd_penalty = st.number_input("回撤惩罚系数", value=float(dqn.get("dd_penalty_coef", 0.5)), format="%.2f")
+
+        sys_ver_options = ["basic", "1.0", "2.0"]
+        sys_ver_idx = sys_ver_options.index(sys_ver_default) if sys_ver_default in sys_ver_options else 1
+        sys_ver = st.selectbox("系统版本", sys_ver_options, index=sys_ver_idx)
+
+        from backtest.rl.feature_engineer import FEATURE_GROUPS
+        fg_keys = list(FEATURE_GROUPS.keys())
+        fg_labels = [FEATURE_GROUPS[k]["label"] for k in fg_keys]
+        fg_map = dict(zip(fg_labels, fg_keys))
+        orig_fgs = src.get("feature_groups", [])
+        orig_labels = [lb for lb, k in fg_map.items() if k in orig_fgs]
+        selected_labels = st.multiselect("特征组", fg_labels, default=orig_labels)
+        selected_fgs = [fg_map[lb] for lb in selected_labels]
+
+        col1, col2 = st.columns(2)
+        with col1:
+            commission = st.number_input("佣金率", value=float(fee.get("commission_rate", 0.00025)), format="%.5f")
+            stamp = st.number_input("印花税率", value=float(fee.get("stamp_duty", 0.001)), format="%.4f")
+        with col2:
+            min_comm = st.number_input("最低佣金", value=float(fee.get("min_commission", 5.0)))
+            capital = st.number_input("初始资金", value=float(fee.get("initial_capital", 100000.0)))
+
+        st.caption(f"📦 {symbol} ｜ 训练 {meta.get('train_start','?')} ~ {meta.get('train_end','?')}"
+                   f" ｜ 验证 {meta.get('val_start','?')} ~ {meta.get('val_end','?')}"
+                   f" ｜ 最优参数: lr={bp.get('lr','?')}, gamma={bp.get('gamma','?')}")
+
+        submitted = st.form_submit_button("🚀 提交训练任务", type="primary")
+        if submitted:
+            if needs_refetch:
+                try:
+                    fetched = _refetch_hp_data(meta)
+                    df_train, df_val = fetched["df_train"], fetched["df_val"]
+                except Exception as e:
+                    st.error(f"数据重抓失败: {e}")
+                    st.stop()
+            else:
+                df_train = params.get("df_train")
+                df_val = params.get("df_val")
+                if df_train is None:
+                    st.error("内存数据不可用，请刷新后重试")
+                    st.stop()
+
+            new_dqn = dict(dqn,
+                n_episodes=n_episodes, lr=lr, gamma=gamma,
+                hidden=hidden, batch_size=batch_size,
+                epsilon_decay=epsilon_decay,
+                reward_window=reward_window,
+                vol_penalty_coef=vol_penalty,
+                dd_penalty_coef=dd_penalty,
+            )
+            new_fee = dict(fee,
+                commission_rate=commission, min_commission=min_comm,
+                stamp_duty=stamp, initial_capital=capital,
+            )
+
+            df_test = df_val.copy()
+            new_params = dict(
+                df_train=df_train, df_test=df_test,
+                system_version=sys_ver,
+                feature_groups=selected_fgs,
+                dqn_params=new_dqn,
+                fee_params=new_fee,
+                meta={
+                    "symbol": symbol,
+                    "system_version": sys_ver,
+                    "feature_groups": selected_fgs,
+                    "train_start": meta.get("train_start", ""),
+                    "train_end": meta.get("train_end", ""),
+                    "df_test_index": df_test.index,
+                    "adjust": meta.get("adjust", "qfq"),
+                },
+            )
+            from ui.rl_training import _rl_train_task
+            new_tid = mgr.submit("RL训练", new_params, _rl_train_task, args=(new_params,))
+            st.session_state[done_key] = new_tid
+            st.rerun()
+
+
 @st.fragment(run_every=1.0)
 def _render_running_detail(task: dict, mgr: TaskManager, tid: str):
     live = mgr.get_task(tid)
@@ -606,13 +820,14 @@ def _render_running_detail(task: dict, mgr: TaskManager, tid: str):
     _render_progress_chart(pdata)
 
 
-def _render_progress_chart(pdata):
+def _render_progress_chart(pdata, xaxis_title="Episode", yaxis_title="Reward"):
     if not pdata or len(pdata) < 2:
         return
     df = pd.DataFrame(pdata, columns=["ep", "value"])
     best_idx = df["value"].idxmax()
     best_val = df.loc[best_idx, "value"]
     best_ep = int(df.loc[best_idx, "ep"])
+    ep_label = "组合" if xaxis_title != "Episode" else "episode"
 
     window = max(5, len(df) // 10)
     df["trend"] = df["value"].rolling(window=window, min_periods=1).mean()
@@ -634,15 +849,15 @@ def _render_progress_chart(pdata):
         mode="markers+text",
         name="最优",
         marker=dict(color="#22c55e", size=12, symbol="star"),
-        text=[f"<b>Reward {best_val:.4f}</b>"],
+        text=[f"<b>{yaxis_title} {best_val:.4f}</b>"],
         textposition="top center",
         textfont=dict(color="#22c55e", size=12),
     ))
     fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10),
-                      xaxis_title="Episode", yaxis_title="Reward",
+                      xaxis_title=xaxis_title, yaxis_title=yaxis_title,
                       showlegend=True)
     st.plotly_chart(fig, width='stretch')
-    st.caption(f"🏆 最优 Reward: 第 {best_ep} episode, Reward={best_val:.4f}")
+    st.caption(f"🏆 最优 {yaxis_title}: 第 {best_ep} {ep_label}, {yaxis_title}={best_val:.4f}")
 
 
 def _render_detail(task: dict, mgr: TaskManager):
@@ -667,11 +882,16 @@ def _render_detail(task: dict, mgr: TaskManager):
                 _render_rl_result(result, task)
             elif task["type"] == "HRL训练":
                 _render_hrl_result(result, task)
+            elif task["type"] == "超参搜索":
+                _render_hp_result(result, task)
 
         pdata = task.get("_progress_data") or mgr.get_progress_data(tid)
         if pdata:
             st.subheader("📈 训练过程")
-            _render_progress_chart(pdata)
+            is_hp = task["type"] == "超参搜索"
+            _render_progress_chart(pdata,
+                xaxis_title="超参组合" if is_hp else "Episode",
+                yaxis_title="最优夏普" if is_hp else "Reward")
 
         # ── 重新训练 ──
         st.divider()
@@ -682,6 +902,8 @@ def _render_detail(task: dict, mgr: TaskManager):
                 _render_rl_retrain_form(task, mgr)
             elif task["type"] == "HRL训练":
                 _render_hrl_retrain_form(task, mgr)
+            elif task["type"] == "超参搜索":
+                _render_hp_retrain_form(task, mgr)
 
     elif status == TaskStatus.FAILED.value:
         st.error(f"训练失败: {task.get('error', '未知错误')}")
