@@ -1,12 +1,13 @@
 <div align="center">
-  <h1>📈 A股定投回测系统</h1>
-  <p><strong>A-Share DCA Backtest System</strong></p>
-  <p>多策略对比 · Walk-Forward 网格搜索 · 智能定投 · Streamlit Web App</p>
+  <h1>📈 A股量化分析 · 定投回测 · 市场情绪系统</h1>
+  <p><strong>Quantitative Analysis · DCA Backtest · Sentiment Dashboard for China A-Share Market</strong></p>
+  <p>多策略对比 · Walk-Forward 网格搜索 · 智能定投 · 强化学习交易 · 板块情绪分析 · Streamlit Web App</p>
   <p>
     <img src="https://img.shields.io/badge/Python-3.10-blue" alt="Python">
     <img src="https://img.shields.io/badge/Streamlit-1.57-red" alt="Streamlit">
     <img src="https://img.shields.io/badge/AKShare-1.18-green" alt="AKShare">
     <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License">
+    <img src="https://img.shields.io/github/last-commit/your-username/stock_history_analysis" alt="Last Commit">
   </p>
 </div>
 
@@ -25,6 +26,8 @@ A股定投回测系统是一个功能全面的 **定投策略回测 Web 应用**
 - **🤖 DQN 强化学习交易系统**：RL 交易智能体，支持实时信号、模型持久化、超参搜索
 - **🧠 分层强化学习 (PPO+DQN)**：上层 PPO 择时 + 下层 DQN 选股，多 ETF 组合管理，交易记录明细，多基准对比（等权持有/月定投/均线偏离定投/单ETF全仓）
 - **📋 代码管理中心**：统一代码注册表，缓存优先数据获取，RL 勾选使用
+- **📊 情绪数据看板**：东方财富股吧/新闻情感分析 + 板块综合情绪排行（5 因子加权），一键导出 PNG 报告
+- **🔄 后台任务管理**：RL 训练/HP 搜索异步队列，实时进度曲线，结果持久化，重训练
 
 > 数据来源：东方财富 (East Money) → AKShare 接口，支持个股 / ETF / LOF / 开放式基金 / 指数，自动缓存、自动降级、自动跨类型回退。
 
@@ -78,12 +81,42 @@ A股定投回测系统是一个功能全面的 **定投策略回测 Web 应用**
 
 **数据划分**：训练集 / 验证集 / 测试集三段式（默认 33/33/33），验证集用于超参搜索，测试集仅做最终评估。
 
+#### 🛠️ 后台任务管理器
+
+| 特性 | 说明 |
+|------|------|
+| **异步队列** | `threading.Semaphore(3)` 限 3 任务并发，`threading.Event` 可取消 |
+| **持久化** | JSON 文件原子写入（`tmp + replace`），页面刷新后任务状态不丢失 |
+| **实时进度** | `@st.fragment(run_every=1.0)` 仅刷新图表区域，不卡整个页面 |
+| **重训练** | 任务详情页 inline 修改参数重新提交，无需切换标签页 |
+| **超参搜索** | Walk-Forward 网格搜索迁移为后台任务，可查看中间结果 |
+| **自动存模型** | 训练完成后自动保存 `.pt` 文件到 `saved_models/rl/`，支持模型浏览器加载 |
+| **优雅退出** | `atexit` 注册清理函数，退出时等待运行中任务自然结束 |
+
+### 💬 市场情绪分析
+
+系统提供**个股**和**板块**双模式情绪看板，数据均来自东方财富 (EastMoney)，通过 AKShare 接口获取。
+
+| 特性 | 说明 |
+|------|------|
+| **个股情绪** | 东方财富股吧帖子 + 新闻原文，中文金融词典打分（可选用 DeepSeek LLM 增强） |
+| **板块情绪排行** | 概念板块（486 个）+ 行业板块，5 因子加权综合得分 |
+| **算法** | 宽度 (30%) · 主力资金 (25%) · 异动 (20%) · 涨跌幅 (15%) · 热度 (10%)，归一化至 [-1, 1] |
+| **散点图** | 情绪 vs 涨跌幅，全量低透明度背景 + 正负各 Top 5 极端值高亮标注 |
+| **板块热帖穿透** | 展开排行行 → 并发爬取该板块成分股的股吧帖子 |
+| **历史快照** | Parquet zstd 自动保存每日板块快照，支持按日期回溯 |
+| **一键导出 PNG** | matplotlib 组合图（散点+直方+排行+免责声明），自动下载缓存 CJK 字体 |
+| **情绪特征供 RL** | `sentiment` feature group（5 列）可选集成到 DQN 训练特征向量 |
+
 ### 🛡️ 数据层
 - **5 种资产类型**：个股、ETF、LOF、开放式基金、指数
 - **自动跨类型回退**：选错类型自动尝试其他类型
 - **QDII 自动降级**：ETF/LOF 的 K 线失败时自动切换净值 API
 - **30 天本地缓存**：Parquet 格式，第二次查询同代码只需 0.2 秒
-- **请求重试**：指数退避 + 浏览器级 Header，最大限度提升成功率
+- **请求重试**：指数退避 + 浏览器级 Header + `requests.Session` 复用，最大限度提升成功率
+- **美股支持**：EastMoney REST API（NASDAQ 105/NYSE 106/AMEX 107），列名与 A 股一致
+- **情绪数据源**：东方财富股吧帖子 + 新闻原文 + 板块行情（概念/行业）+ 板块异动数据
+- **历史持久化**：板块情绪快照 Parquet zstd 格式，增量写入 + 按列名去重
 
 ---
 
@@ -139,8 +172,18 @@ stock_history_analysis/
 ├── data/                     # 数据层模块（Phase 2）
 │   ├── asset_config.py       #   资产类型配置（个股/ETF/LOF/基金/指数）
 │   ├── cache.py              #   本地缓存（Parquet, 30天过期, LRU）
-│   ├── fetcher.py            #   HTTP/API 数据获取（重试/降级/回退）
-│   └── symbol_registry.py    #   代码注册表管理（CRUD + 缓存优先获取）
+│   ├── fetcher.py            #   HTTP/API 数据获取（重试/降级/回退）+ 情绪数据入口
+│   ├── symbol_registry.py    #   代码注册表管理（CRUD + 缓存优先获取）
+│   └── sentiment/            #   情绪分析模块
+│       ├── base.py           #     抽象基类
+│       ├── cache.py          #     情绪结果缓存
+│       ├── deepseek_client.py  #   LLM 增强分析（DeepSeek API）
+│       ├── guba.py           #     东方财富股吧爬虫
+│       ├── history.py        #     情绪数据持久化（Parquet）
+│       ├── lexicon.py        #     中文金融情感词典
+│       ├── news.py           #     新闻数据源
+│       ├── poller.py         #     定时轮询脚本
+│       └── sector_sentiment.py  #  板块情绪引擎（5 因子加权 + 板块行情/异动）
 │
 ├── data_fetcher.py           # 向后兼容 shim（→ data.fetcher）
 │
@@ -151,6 +194,7 @@ stock_history_analysis/
 │   ├── hierarchical_rl.py    #   分层强化学习页面（PPO+DQN 择时选股）
 │   ├── rl_signal.py          #   实时信号面板
 │   ├── rl_training.py        #   强化学习训练页面（含超参搜索）
+│   ├── sentiment.py          #   情绪数据看板（个股+板块双模式，一键导出）
 │   ├── task_manager.py       #   后台训练任务管理（列表+详情+持久化）
 │   └── symbol_manager.py     #   代码管理中心 UI（CRUD + 批量删除 + 同步）
 │
@@ -205,13 +249,14 @@ stock_history_analysis/
 |------|------|
 | Web UI | [Streamlit](https://streamlit.io/) |
 | 数据源 | [AKShare](https://github.com/akfamily/akshare) + 东方财富直连 |
-| 图表 | [Plotly](https://plotly.com/python/) (go.Figure + Heatmap) |
-| 数据处理 | Pandas / NumPy |
-| 强化学习 | [PyTorch](https://pytorch.org/) (DQN, 经验回放, 目标网络) |
+| 图表 | [Plotly](https://plotly.com/python/) (go.Figure + Heatmap) + [Matplotlib](https://matplotlib.org/) |
+| 数据处理 | Pandas / NumPy / Apache Parquet |
+| 强化学习 | [PyTorch](https://pytorch.org/) (DQN, PPO, 经验回放, 目标网络) |
 | 信号增强 | scikit-learn (LinearSVC) + XGBoost |
 | 技术指标 | 手写实现 (MA/EMA/BB/ATR/ADX/CCI/KDJ/RSI) |
+| 文本分析 | jieba 分词 + 中文金融情感词典 + DeepSeek API |
 | 部署 | PM2 / systemd / WSL2 |
-| 缓存格式 | Apache Parquet |
+| 后台任务 | threading + JSON 持久化 + `@st.fragment` 实时进度 |
 
 ---
 
