@@ -143,6 +143,36 @@ class GubaSource(SentimentSource):
     def name(self) -> str:
         return "guba"
 
+    def fetch_raw_posts(
+        self,
+        symbol: str,
+        max_pages: int = 10,
+        use_cache: bool = True,
+    ) -> pd.DataFrame:
+        """获取原始帖子(含逐条情感得分), 不聚合."""
+        if use_cache:
+            raw_ck = cache_key("guba_raw", symbol)
+            raw_cached = read_cache(raw_ck, "guba_raw")
+            if raw_cached is not None:
+                posts = raw_cached.to_dict("records")
+            else:
+                posts = _fetch_guba_pages(symbol, max_pages=max_pages)
+                if posts:
+                    write_cache(raw_ck, pd.DataFrame(posts))
+        else:
+            posts = _fetch_guba_pages(symbol, max_pages=max_pages)
+
+        if not posts:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(posts)
+        scores = analyze_batch(df["text"].tolist())
+        df["score"] = [s["score"] for s in scores]
+        df["confidence"] = [s["confidence"] for s in scores]
+        df["sentiment"] = ["positive" if s > 0.05 else "negative" if s < -0.05 else "neutral"
+                           for s in df["score"]]
+        return df.sort_values("date", ascending=False).reset_index(drop=True)
+
     def fetch(
         self,
         symbol: str,

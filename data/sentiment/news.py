@@ -92,6 +92,32 @@ class NewsSource(SentimentSource):
         daily.index = pd.to_datetime(daily.index)
         return daily.sort_index()
 
+    def fetch_raw_posts(
+        self,
+        symbol: str,
+        max_pages: int = 5,
+        use_cache: bool = True,
+    ) -> pd.DataFrame:
+        """获取原始新闻 (含逐条情感得分)."""
+        if use_cache:
+            raw_ck = cache_key("news_raw", symbol)
+            raw_cached = read_cache(raw_ck, "news_raw")
+            if raw_cached is not None:
+                df = raw_cached
+            else:
+                df = self._fetch_news(symbol)
+                if not df.empty:
+                    write_cache(raw_ck, df)
+        else:
+            df = self._fetch_news(symbol)
+        if df.empty:
+            return pd.DataFrame()
+        scores = lexicon_scores(df["text"].tolist())
+        df["score"] = scores
+        df["sentiment"] = ["positive" if s > 0.05 else "negative" if s < -0.05 else "neutral"
+                           for s in df["score"]]
+        return df.sort_values("date", ascending=False).reset_index(drop=True)
+
     def fetch(
         self,
         symbol: str,
