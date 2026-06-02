@@ -177,8 +177,8 @@ def render_sentiment_dashboard():
 
         st.session_state.sent_daily = daily
         st.session_state.sent_raw = raw
-        st.session_state.sent_symbol = symbol
-        st.session_state.sent_source = source_name
+        st.session_state.sent_fetched_symbol = symbol
+        st.session_state.sent_fetched_source = source_name
         st.rerun()
 
     daily = st.session_state.get("sent_daily")
@@ -188,7 +188,7 @@ def render_sentiment_dashboard():
         st.info("👈 在侧边栏选择代码后点击「拉取数据」")
         return
 
-    if st.session_state.get("sent_symbol") != symbol:
+    if st.session_state.get("sent_fetched_symbol") != symbol:
         st.info("代码已切换，请重新拉取数据")
         return
 
