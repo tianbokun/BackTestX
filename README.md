@@ -124,14 +124,6 @@ pm2 startup
 
 ---
 
-## 🖥️ 界面预览 | UI Preview
-
-> 建议截图并放置于此，例如：
->
-> - `docs/screenshots/dca_mode.png`  — 定投回测模式（多策略对比图）
-> - `docs/screenshots/grid_search.png` — 网格搜索模式（热力图 + Walk-Forward 结果）
-> - `docs/screenshots/comparison.png`  — 全能对比（13+ 策略同图）
-
 ---
 
 ## 🧩 项目结构 | Project Structure
@@ -159,6 +151,7 @@ stock_history_analysis/
 │   ├── hierarchical_rl.py    #   分层强化学习页面（PPO+DQN 择时选股）
 │   ├── rl_signal.py          #   实时信号面板
 │   ├── rl_training.py        #   强化学习训练页面（含超参搜索）
+│   ├── task_manager.py       #   后台训练任务管理（列表+详情+持久化）
 │   └── symbol_manager.py     #   代码管理中心 UI（CRUD + 批量删除 + 同步）
 │
 ├── backtest/
