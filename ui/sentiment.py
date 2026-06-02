@@ -378,11 +378,11 @@ def _build_export_image(result: pd.DataFrame) -> bytes | None:
     bot_name = result.iloc[-1]["board_name"]
     bot_score = result.iloc[-1]["sentiment_score"]
 
-    fig = plt.figure(figsize=(14, 9), facecolor="white")
-    gs = fig.add_gridspec(3, 2, height_ratios=[0.08, 0.50, 0.42], hspace=0.35, wspace=0.30)
+    fig = plt.figure(figsize=(14, 11.5), facecolor="white")
+    gs = fig.add_gridspec(5, 1, height_ratios=[0.07, 0.30, 0.22, 0.28, 0.13], hspace=0.55)
 
     # ── 标题行 ──
-    ax_title = fig.add_subplot(gs[0, :])
+    ax_title = fig.add_subplot(gs[0, 0])
     ax_title.axis("off")
     ax_title.text(
         0.5, 0.3,
@@ -398,7 +398,7 @@ def _build_export_image(result: pd.DataFrame) -> bytes | None:
         transform=ax_title.transAxes,
     )
 
-    # ── 左: 散点图 ──
+    # ── 散点图 ──
     ax_sc = fig.add_subplot(gs[1, 0])
     sc = result.copy()
     sc["score_abs"] = sc["sentiment_score"].abs()
@@ -416,6 +416,17 @@ def _build_export_image(result: pd.DataFrame) -> bytes | None:
     if not neg.empty:
         ax_sc.scatter(neg["sentiment_score"], neg["change_pct"],
                       s=40, c="#ef4444", edgecolors="white", linewidth=0.5, zorder=2, label="负面")
+    # 标注情绪得分最高/最低各 5 个板块名称
+    for idx in pd.concat([sc.nlargest(5, "sentiment_score"),
+                           sc.nsmallest(5, "sentiment_score")]).index:
+        r = sc.loc[idx]
+        ax_sc.annotate(
+            r["board_name"],
+            (r["sentiment_score"], r["change_pct"]),
+            xytext=(0, 8), textcoords="offset points",
+            ha="center", fontsize=7, color="#1f2937",
+            arrowprops=dict(arrowstyle="->", color="gray", lw=0.5),
+        )
     ax_sc.axhline(y=0, linestyle="--", color="gray", linewidth=0.8)
     ax_sc.axvline(x=0, linestyle="--", color="gray", linewidth=0.8)
     ax_sc.set_xlabel("情绪得分", fontsize=10)
@@ -425,8 +436,8 @@ def _build_export_image(result: pd.DataFrame) -> bytes | None:
     ax_sc.spines["top"].set_visible(False)
     ax_sc.spines["right"].set_visible(False)
 
-    # ── 右: 直方图 ──
-    ax_hist = fig.add_subplot(gs[1, 1])
+    # ── 直方图 ──
+    ax_hist = fig.add_subplot(gs[2, 0])
     bins = min(30, max(10, total // 5))
     ax_hist.hist(result["sentiment_score"], bins=bins, color="#3b82f6", edgecolor="white", linewidth=0.5)
     ax_hist.axvline(x=0, linestyle="--", color="gray", linewidth=0.8)
@@ -436,10 +447,32 @@ def _build_export_image(result: pd.DataFrame) -> bytes | None:
     ax_hist.spines["top"].set_visible(False)
     ax_hist.spines["right"].set_visible(False)
 
-    # ── 下: 排行表 ──
-    ax_tbl = fig.add_subplot(gs[2, :])
+    # ── 排行表 ──
+    ax_tbl = fig.add_subplot(gs[3, 0])
     ax_tbl.axis("off")
     ax_tbl.set_title("板块排行 Top / Bottom 5", fontsize=12, fontweight="bold", pad=10)
+
+    # ── 免责声明 ──
+    ax_footer = fig.add_subplot(gs[4, 0])
+    ax_footer.axis("off")
+    ax_footer.text(
+        0.02, 0.85,
+        "数据来源: 东方财富 (EastMoney) API via AKShare",
+        ha="left", va="top", fontsize=7.5, color="#9ca3af",
+        transform=ax_footer.transAxes,
+    )
+    ax_footer.text(
+        0.02, 0.55,
+        "算法说明: 5 因子加权情绪得分 — 宽度 (30%) · 主力资金 (25%) · 异动 (20%) · 涨跌幅 (15%) · 热度 (10%)",
+        ha="left", va="top", fontsize=7.5, color="#9ca3af",
+        transform=ax_footer.transAxes,
+    )
+    ax_footer.text(
+        0.02, 0.20,
+        "免责声明: 本报告仅供参考学习，不构成任何投资建议。股市有风险，投资需谨慎。",
+        ha="left", va="top", fontsize=7.5, color="#9ca3af",
+        transform=ax_footer.transAxes,
+    )
 
     n = min(5, total)
     top5 = result.head(n)[["rank", "board_name", "sentiment_score", "change_pct"]].copy()
@@ -527,6 +560,21 @@ def _render_sector_scatter(result: pd.DataFrame):
                 text=subset["board_name"],
                 hovertemplate="<b>%{text}</b><br>情绪: %{x:.3f}<br>涨跌幅: %{y:.2f}%<extra></extra>",
             ))
+    # 标注情绪得分最高/最低各 5 个板块名称
+    ann_pos = scatter.nlargest(5, "sentiment_score")
+    ann_neg = scatter.nsmallest(5, "sentiment_score")
+    ann_data = pd.concat([ann_pos, ann_neg])
+    fig_scatter.add_trace(go.Scattergl(
+        x=ann_data["sentiment_score"],
+        y=ann_data["change_pct"],
+        mode="markers+text",
+        marker=dict(size=12, color="rgba(0,0,0,0)", line=dict(width=0)),
+        text=ann_data["board_name"],
+        textposition="top center",
+        textfont=dict(size=10, color="#1f2937"),
+        showlegend=False,
+        hoverinfo="skip",
+    ))
     fig_scatter.add_hline(y=0, line_dash="dot", line_color="gray")
     fig_scatter.add_vline(x=0, line_dash="dot", line_color="gray")
     fig_scatter.update_layout(
