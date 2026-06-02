@@ -378,8 +378,8 @@ def _build_export_image(result: pd.DataFrame) -> bytes | None:
     bot_name = result.iloc[-1]["board_name"]
     bot_score = result.iloc[-1]["sentiment_score"]
 
-    fig = plt.figure(figsize=(14, 11.5), facecolor="white")
-    gs = fig.add_gridspec(5, 1, height_ratios=[0.07, 0.30, 0.22, 0.28, 0.13], hspace=0.55)
+    fig = plt.figure(figsize=(14, 13), facecolor="white")
+    gs = fig.add_gridspec(5, 1, height_ratios=[0.07, 0.28, 0.18, 0.34, 0.13], hspace=0.65)
 
     # ── 标题行 ──
     ax_title = fig.add_subplot(gs[0, 0])
@@ -416,14 +416,21 @@ def _build_export_image(result: pd.DataFrame) -> bytes | None:
     if not neg.empty:
         ax_sc.scatter(neg["sentiment_score"], neg["change_pct"],
                       s=40, c="#ef4444", edgecolors="white", linewidth=0.5, zorder=2, label="负面")
-    # 标注情绪得分最高/最低各 5 个板块名称
-    for idx in pd.concat([sc.nlargest(5, "sentiment_score"),
-                           sc.nsmallest(5, "sentiment_score")]).index:
-        r = sc.loc[idx]
+    # 标注情绪得分最高/最低各 5 个 — 自动防重叠
+    ann_idx = pd.concat([sc.nlargest(5, "sentiment_score"),
+                          sc.nsmallest(5, "sentiment_score")]).index
+    ann_rows = sc.loc[ann_idx].sort_values("change_pct")
+    yvals = ann_rows["change_pct"].values
+    offsets = [(0, 8)] * len(yvals)
+    for i in range(len(yvals) - 1):
+        if abs(yvals[i] - yvals[i + 1]) < 1.5:
+            offsets[i] = (0, -14)
+            offsets[i + 1] = (0, 8)
+    for idx, (_, r) in enumerate(ann_rows.iterrows()):
         ax_sc.annotate(
             r["board_name"],
             (r["sentiment_score"], r["change_pct"]),
-            xytext=(0, 8), textcoords="offset points",
+            xytext=offsets[idx], textcoords="offset points",
             ha="center", fontsize=7, color="#1f2937",
             arrowprops=dict(arrowstyle="->", color="gray", lw=0.5),
         )
@@ -504,7 +511,7 @@ def _build_export_image(result: pd.DataFrame) -> bytes | None:
         else:
             cell.set_facecolor(row_colors[row - 1] if row - 1 < len(row_colors) else "#ffffff")
         cell.set_edgecolor("#e5e7eb")
-        cell.set_height(0.045)
+        cell.set_height(0.09)
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=200, bbox_inches="tight", facecolor="white")
@@ -560,17 +567,23 @@ def _render_sector_scatter(result: pd.DataFrame):
                 text=subset["board_name"],
                 hovertemplate="<b>%{text}</b><br>情绪: %{x:.3f}<br>涨跌幅: %{y:.2f}%<extra></extra>",
             ))
-    # 标注情绪得分最高/最低各 5 个板块名称
+    # 标注情绪得分最高/最低各 5 个 — 自动防重叠
     ann_pos = scatter.nlargest(5, "sentiment_score")
     ann_neg = scatter.nsmallest(5, "sentiment_score")
-    ann_data = pd.concat([ann_pos, ann_neg])
+    ann_data = pd.concat([ann_pos, ann_neg]).sort_values("change_pct")
+    yv = ann_data["change_pct"].values
+    positions = ["top center"] * len(yv)
+    for i in range(len(yv) - 1):
+        if abs(yv[i] - yv[i + 1]) < 1.5:
+            positions[i] = "bottom center"
+            positions[i + 1] = "top center"
     fig_scatter.add_trace(go.Scattergl(
         x=ann_data["sentiment_score"],
         y=ann_data["change_pct"],
         mode="markers+text",
         marker=dict(size=12, color="rgba(0,0,0,0)", line=dict(width=0)),
         text=ann_data["board_name"],
-        textposition="top center",
+        textposition=positions,
         textfont=dict(size=10, color="#1f2937"),
         showlegend=False,
         hoverinfo="skip",
