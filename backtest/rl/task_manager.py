@@ -6,6 +6,7 @@ from pathlib import Path
 from enum import Enum
 import atexit
 
+import numpy as np
 import pandas as pd
 
 TASKS_FILE = Path("tasks_registry.json")
