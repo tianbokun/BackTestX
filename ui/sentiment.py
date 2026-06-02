@@ -1,6 +1,6 @@
 """情绪数据看板 — 个股/板块双模式."""
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import streamlit as st
 import pandas as pd
@@ -10,13 +10,44 @@ from plotly.subplots import make_subplots
 
 from data.sentiment.guba import GubaSource
 from data.sentiment.news import NewsSource
-from data.sentiment.sector_sentiment import compute_sector_sentiment
+from data.sentiment.sector_sentiment import (
+    compute_sector_sentiment,
+    fetch_board_constituents,
+)
+from data.sentiment import history as hist
 from data.symbol_registry import SymbolRegistry
 
 _SOURCES = {
     "guba": GubaSource(),
     "news": NewsSource(),
 }
+
+# ── 常量 ──
+_HOT_CACHE_TTL = timedelta(minutes=5)
+
+
+def _fmt_error(e: Exception) -> str:
+    """格式化异常为可读的错误详情 (含简短 traceback)."""
+    import traceback
+    tb_lines = traceback.format_exception(type(e), e, e.__traceback__, limit=5)
+    # 取关键帧: 文件路径:行号 → 函数名
+    frames = []
+    for line in tb_lines:
+        if line.startswith("  File "):
+            frames.append(line.strip())
+    parts = [f"{type(e).__name__}"]
+    if str(e):
+        parts.append(str(e))
+    if frames:
+        parts.append("├─ 调用栈:")
+        for f in frames[-3:]:
+            parts.append(f"   {f}")
+    cause = getattr(e, "__cause__", None) or getattr(e, "__context__", None)
+    if cause:
+        parts.append(f"├─ 原因: {type(cause).__name__}")
+        if str(cause):
+            parts.append(f"   └─ {cause}")
+    return "\n".join(parts)
 
 
 def _color_score(s: float) -> str:
@@ -134,6 +165,86 @@ def _render_raw_posts(df: pd.DataFrame, source_name: str):
     )
 
 
+# ── 板块热帖函数 ──────────────────────────────────────────
+
+def _render_sector_hot_posts(board_code: str, board_name: str):
+    """在 expander 内渲染板块成分股的热门帖子."""
+    if not board_code:
+        st.caption("无板块代码，无法获取成分股")
+        return
+
+    cache_key = f"posts_{board_code}"
+    now = datetime.now()
+    cached = st.session_state.get(f"_hot_posts_{board_code}")
+    if cached is not None:
+        data, ts = cached
+        if now - ts < _HOT_CACHE_TTL:
+            _display_hot_posts(data, board_name)
+            return
+
+    with st.spinner(f"获取 {board_name} 成分股..."):
+        constituents = fetch_board_constituents(board_code, top_n=5)
+
+    if constituents.empty:
+        st.caption("无法获取成分股数据")
+        return
+
+    results = []
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _fetch_stock_posts(row):
+        sym = row["symbol"]
+        try:
+            src = _SOURCES["guba"]
+            posts = src.fetch_raw_posts(sym)
+            if posts is not None and not posts.empty:
+                posts = posts.copy()
+                posts["stock_symbol"] = sym
+                posts["stock_name"] = row.get("name", sym)
+                posts["stock_change"] = row.get("change_pct", None)
+                return posts
+        except Exception:
+            pass
+        return None
+
+    progress_text = st.empty()
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {pool.submit(_fetch_stock_posts, row): i
+                   for i, (_, row) in enumerate(constituents.iterrows())}
+        for f in as_completed(futures):
+            idx = futures[f]
+            sym = constituents.iloc[idx]["symbol"]
+            progress_text.caption(f"已获取 {sym} 的帖子...")
+            res = f.result()
+            if res is not None:
+                results.append(res)
+
+    if not results:
+        st.caption("暂无帖子数据")
+        return
+
+    try:
+        combined = pd.concat(results, ignore_index=True)
+    except Exception:
+        st.caption("整合帖子数据时出错，部分数据可能不完整")
+        return
+    st.session_state[f"_hot_posts_{board_code}"] = (combined, now)
+    _display_hot_posts(combined, board_name)
+
+
+def _display_hot_posts(combined: pd.DataFrame, board_name: str):
+    """展示板块热帖 (按股票分组)."""
+    st.caption(f"共 {len(combined)} 条帖子")
+    for stock_symbol, group in combined.groupby("stock_symbol"):
+        name = group.iloc[0].get("stock_name", stock_symbol)
+        change = group.iloc[0].get("stock_change", None)
+        label = f"{name} ({stock_symbol})"
+        if pd.notna(change):
+            label += f"  {change:+.2f}%"
+        with st.expander(label):
+            _render_raw_posts(group.reset_index(drop=True), "股吧")
+
+
 # ── 板块模式 ──────────────────────────────────────────────
 
 def _format_inflow(v: float) -> str:
@@ -158,6 +269,360 @@ def _sentiment_bar_color(score: float) -> str:
     return "#d1d5db"
 
 
+# ── 导出图片 (matplotlib) ────────────────────────────────
+
+_CJK_FONT = None  # lazy cache
+
+
+def _cjk_font_name() -> str | None:
+    """查找 or 下载 CJK 字体, 返回 matplotlib 字体族名称."""
+    import os
+    global _CJK_FONT
+    if _CJK_FONT is not None:
+        return _CJK_FONT if _CJK_FONT else None
+
+    from matplotlib.font_manager import FontProperties
+    import matplotlib.font_manager as fm
+
+    # 已知可用的 CJK 字体名称 (不含中文字符, 无法通过字符范围检测)
+    _CJK_NAMES = {"WenQuanYi Micro Hei", "WenQuanYi Zen Hei", "Noto Sans SC",
+                   "Noto Sans CJK SC", "Source Han Sans SC", "Droid Sans Fallback"}
+
+    def _search() -> str | None:
+        for f in fm.fontManager.ttflist:
+            if f.name in _CJK_NAMES:
+                return f.name
+        # fallback: 文件名含 wqy / noto / cjk 的
+        for f in fm.fontManager.ttflist:
+            lower = f.fname.lower()
+            if any(kw in lower for kw in ("wqy", "wenquan", "noto", "cjk", "han", "chinese")):
+                return f.name
+        return None
+
+    name = _search()
+    if name:
+        _CJK_FONT = name
+        return name
+
+    cache_dir = os.path.join(os.path.dirname(__file__), "..", ".cache", "fonts")
+    os.makedirs(cache_dir, exist_ok=True)
+    font_path = os.path.join(cache_dir, "wqy-microhei.ttc")
+
+    if not os.path.exists(font_path):
+        try:
+            import urllib.request, tarfile
+            deb_path = font_path + ".deb"
+            url = "https://mirrors.tuna.tsinghua.edu.cn/debian/pool/main/f/fonts-wqy-microhei/fonts-wqy-microhei_0.2.0-beta-3.1_all.deb"
+            urllib.request.urlretrieve(url, deb_path)
+            with open(deb_path, "rb") as f:
+                data = f.read()
+            idx = data.find(b"data.tar")
+            if idx >= 0:
+                start = data.find(b"\x60\x0a", idx)
+                if start >= 0:
+                    start += 2
+                    next_entry = data.find(b"\x60\x0a", data.find(b"data.tar", start) + 8)
+                    if next_entry >= 0:
+                        with tarfile.open(fileobj=__import__("io").BytesIO(data[start:next_entry])) as tar:
+                            for m in tar:
+                                if m.name.endswith(".ttc"):
+                                    f2 = tar.extractfile(m)
+                                    if f2:
+                                        with open(font_path, "wb") as out:
+                                            out.write(f2.read())
+                                    break
+            os.remove(deb_path)
+        except Exception:
+            pass
+
+    if os.path.exists(font_path):
+        fm.fontManager.addfont(font_path)
+        name = _search()
+        if not name:
+            # addfont 未加入 ttflist, 直接从文件读名字
+            try:
+                name = FontProperties(fname=font_path).get_name()
+            except Exception:
+                pass
+        _CJK_FONT = name or ""
+        return _CJK_FONT if _CJK_FONT else None
+
+    _CJK_FONT = ""
+    return None
+
+
+def _build_export_image(result: pd.DataFrame) -> bytes | None:
+    """用 matplotlib 构建排版优秀的导出图并返回 PNG bytes."""
+    import io, os
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.table as tbl
+        from matplotlib.font_manager import FontProperties
+    except ImportError:
+        return None
+
+    # 设置 CJK 字体
+    cjk = _cjk_font_name()
+    if cjk:
+        plt.rcParams["font.sans-serif"] = [cjk, "DejaVu Sans"]
+        plt.rcParams["font.family"] = "sans-serif"
+        plt.rcParams["axes.unicode_minus"] = False
+
+    total = len(result)
+    pos_count = int((result["sentiment_score"] > 0).sum())
+    neg_count = total - pos_count
+    top_name = result.iloc[0]["board_name"]
+    top_score = result.iloc[0]["sentiment_score"]
+    bot_name = result.iloc[-1]["board_name"]
+    bot_score = result.iloc[-1]["sentiment_score"]
+
+    fig = plt.figure(figsize=(14, 9), facecolor="white")
+    gs = fig.add_gridspec(3, 2, height_ratios=[0.08, 0.50, 0.42], hspace=0.35, wspace=0.30)
+
+    # ── 标题行 ──
+    ax_title = fig.add_subplot(gs[0, :])
+    ax_title.axis("off")
+    ax_title.text(
+        0.5, 0.3,
+        f"板块情绪分析报告  —  {date.today()}",
+        ha="center", va="center", fontsize=18, fontweight="bold", color="#1f2937",
+        transform=ax_title.transAxes,
+    )
+    ax_title.text(
+        0.5, -0.2,
+        f"总数 {total}   ·   正面 {pos_count}   ·   负面 {neg_count}   ·   "
+        f"最正面 {top_name} ({top_score:.3f})   ·   最负面 {bot_name} ({bot_score:.3f})",
+        ha="center", va="center", fontsize=9, color="#6b7280",
+        transform=ax_title.transAxes,
+    )
+
+    # ── 左: 散点图 ──
+    ax_sc = fig.add_subplot(gs[1, 0])
+    sc = result.copy()
+    sc["score_abs"] = sc["sentiment_score"].abs()
+    n_ex = min(40, max(20, total // 3))
+    ex_idx = sc["score_abs"].sort_values(ascending=False).index[:n_ex]
+    ex = sc.loc[ex_idx]
+
+    ax_sc.scatter(sc["sentiment_score"], sc["change_pct"],
+                  s=8, c="lightgray", alpha=0.3, edgecolors="none", zorder=1)
+    pos = ex[ex["sentiment_score"] > 0]
+    neg = ex[ex["sentiment_score"] <= 0]
+    if not pos.empty:
+        ax_sc.scatter(pos["sentiment_score"], pos["change_pct"],
+                      s=40, c="#22c55e", edgecolors="white", linewidth=0.5, zorder=2, label="正面")
+    if not neg.empty:
+        ax_sc.scatter(neg["sentiment_score"], neg["change_pct"],
+                      s=40, c="#ef4444", edgecolors="white", linewidth=0.5, zorder=2, label="负面")
+    ax_sc.axhline(y=0, linestyle="--", color="gray", linewidth=0.8)
+    ax_sc.axvline(x=0, linestyle="--", color="gray", linewidth=0.8)
+    ax_sc.set_xlabel("情绪得分", fontsize=10)
+    ax_sc.set_ylabel("涨跌幅 (%)", fontsize=10)
+    ax_sc.set_title("情绪 vs 涨跌幅", fontsize=12, fontweight="bold", pad=8)
+    ax_sc.legend(fontsize=8, loc="best")
+    ax_sc.spines["top"].set_visible(False)
+    ax_sc.spines["right"].set_visible(False)
+
+    # ── 右: 直方图 ──
+    ax_hist = fig.add_subplot(gs[1, 1])
+    bins = min(30, max(10, total // 5))
+    ax_hist.hist(result["sentiment_score"], bins=bins, color="#3b82f6", edgecolor="white", linewidth=0.5)
+    ax_hist.axvline(x=0, linestyle="--", color="gray", linewidth=0.8)
+    ax_hist.set_xlabel("情绪得分", fontsize=10)
+    ax_hist.set_ylabel("板块数量", fontsize=10)
+    ax_hist.set_title("情绪得分分布", fontsize=12, fontweight="bold", pad=8)
+    ax_hist.spines["top"].set_visible(False)
+    ax_hist.spines["right"].set_visible(False)
+
+    # ── 下: 排行表 ──
+    ax_tbl = fig.add_subplot(gs[2, :])
+    ax_tbl.axis("off")
+    ax_tbl.set_title("板块排行 Top / Bottom 5", fontsize=12, fontweight="bold", pad=10)
+
+    n = min(5, total)
+    top5 = result.head(n)[["rank", "board_name", "sentiment_score", "change_pct"]].copy()
+    bot5 = result.tail(n)[["rank", "board_name", "sentiment_score", "change_pct"]].copy()
+    data_rows = []
+    for _, r in top5.iterrows():
+        data_rows.append([int(r["rank"]), r["board_name"], f"{r['sentiment_score']:.4f}", f"{r['change_pct']:.2f}%"])
+    data_rows.append(["…", "", "", ""])
+    for _, r in bot5.iterrows():
+        data_rows.append([int(r["rank"]), r["board_name"], f"{r['sentiment_score']:.4f}", f"{r['change_pct']:.2f}%"])
+
+    col_labels = ["排名", "板块名称", "情绪得分", "涨跌幅(%)"]
+    cell_text = [[str(r[ci]) for ci in range(4)] for r in data_rows]
+    row_colors = (["#f0fdf4"] * n + ["#ffffff"] + ["#fef2f2"] * n)
+
+    table = ax_tbl.table(
+        cellText=cell_text,
+        colLabels=col_labels,
+        cellLoc="center",
+        loc="center",
+        colWidths=[0.08, 0.35, 0.15, 0.15],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    for (row, col), cell in table.get_celld().items():
+        if row == 0:
+            cell.set_facecolor("#1f2937")
+            cell.set_text_props(color="white", fontweight="bold")
+        else:
+            cell.set_facecolor(row_colors[row - 1] if row - 1 < len(row_colors) else "#ffffff")
+        cell.set_edgecolor("#e5e7eb")
+        cell.set_height(0.045)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return buf.getvalue()
+
+
+# ── 共用散点图 ───────────────────────────────────────────
+
+def _render_sector_scatter(result: pd.DataFrame):
+    """情绪 vs 涨跌幅散点图 (聚焦极端值)."""
+    st.subheader("📈 情绪 vs 涨跌幅")
+    scatter = result.copy()
+    scatter["score_abs"] = scatter["sentiment_score"].abs()
+
+    total = len(scatter)
+    n_extreme = min(40, max(20, total // 3))
+    n_mid = min(60, total - n_extreme) if total > n_extreme + 30 else 0
+
+    sorted_idx = scatter["score_abs"].sort_values(ascending=False).index
+    extreme_idx = sorted_idx[:n_extreme]
+
+    if n_mid > 0:
+        mid_idx = sorted_idx[n_extreme:]
+        sampled = scatter.loc[mid_idx].sample(n=n_mid, random_state=42)
+        plot_idx = extreme_idx.union(sampled.index)
+        plot_data = scatter.loc[plot_idx].copy()
+        plot_data["is_extreme"] = plot_data.index.isin(extreme_idx)
+    else:
+        plot_data = scatter.loc[extreme_idx].copy()
+        plot_data["is_extreme"] = True
+
+    fig_scatter = go.Figure()
+    mid_data = plot_data[~plot_data["is_extreme"]]
+    if not mid_data.empty:
+        fig_scatter.add_trace(go.Scattergl(
+            x=mid_data["sentiment_score"],
+            y=mid_data["change_pct"],
+            mode="markers",
+            marker=dict(size=5, color="rgba(150,150,150,0.35)", line=dict(width=0)),
+            showlegend=False, hoverinfo="skip",
+        ))
+    pos = plot_data[(plot_data["is_extreme"]) & (plot_data["sentiment_score"] > 0)]
+    neg = plot_data[(plot_data["is_extreme"]) & (plot_data["sentiment_score"] <= 0)]
+    for subset, color, label in [(pos, "#22c55e", "正面"), (neg, "#ef4444", "负面")]:
+        if not subset.empty:
+            fig_scatter.add_trace(go.Scattergl(
+                x=subset["sentiment_score"],
+                y=subset["change_pct"],
+                mode="markers",
+                marker=dict(size=10, color=color, line=dict(width=1, color="white")),
+                name=label,
+                text=subset["board_name"],
+                hovertemplate="<b>%{text}</b><br>情绪: %{x:.3f}<br>涨跌幅: %{y:.2f}%<extra></extra>",
+            ))
+    fig_scatter.add_hline(y=0, line_dash="dot", line_color="gray")
+    fig_scatter.add_vline(x=0, line_dash="dot", line_color="gray")
+    fig_scatter.update_layout(
+        height=400, margin=dict(l=10, r=10, t=10, b=10),
+        xaxis_title="情绪得分", yaxis_title="涨跌幅 (%)",
+        hovermode="closest",
+        legend=dict(orientation="h", y=1.08, x=0.5, xanchor="center"),
+    )
+    st.plotly_chart(fig_scatter, width='stretch')
+
+
+# ── 下载 (CSV + 导出图片) ──────────────────────────────
+
+def _render_sector_downloads(result: pd.DataFrame):
+    """CSV + 一键导出 PNG 按钮."""
+    csv = result.to_csv(index=False)
+    dc1, dc2 = st.columns(2)
+    with dc1:
+        st.download_button(
+            "📥 下载板块情绪数据 CSV",
+            data=csv,
+            file_name=f"sector_sentiment_{date.today()}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    with dc2:
+        _render_export_button(result)
+
+
+def _render_export_button(result: pd.DataFrame):
+    """渲染一键导出按钮."""
+    import io
+    buf = _build_export_image(result)
+    if buf is None:
+        st.caption("💡 安装 matplotlib 后可导出图片")
+        return
+
+    st.download_button(
+        "📸 一键导出图片 (PNG)",
+        data=buf,
+        file_name=f"sector_sentiment_{date.today()}.png",
+        mime="image/png",
+        use_container_width=True,
+    )
+    with st.popover("👁️ 预览"):
+        st.image(buf, use_container_width=True)
+
+
+def _render_sector_history():
+    """展示历史板块快照."""
+    st.subheader("📅 历史板块快照")
+    dates = hist.list_sector_snapshot_dates()
+    if not dates:
+        st.info("尚无历史板块快照，先刷新一次数据")
+        return
+    selected = st.selectbox("选择日期", dates, key="sector_hist_date")
+    df = hist.load_sector_history(selected)
+    if df.empty:
+        st.warning("该日期无数据")
+        return
+
+    st.caption(f"快照时间: {selected}  |  共 {len(df)} 个板块")
+    top = df.head(5)
+    cols = st.columns(4)
+    cols[0].metric("总板块数", f"{len(df)}")
+    cols[1].metric("最正面", top.iloc[0]["board_name"],
+                   delta=f"得分 {top.iloc[0]['sentiment_score']:.3f}")
+    cols[2].metric("最负面", df.iloc[-1]["board_name"],
+                   delta=f"得分 {df.iloc[-1]['sentiment_score']:.3f}",
+                   delta_color="inverse")
+    pos_count = (df["sentiment_score"] > 0).sum()
+    cols[3].metric("正面/负面", f"{pos_count}/{len(df) - pos_count}")
+
+    display = df.head(100).copy()
+    display["情绪"] = display["sentiment_score"].apply(
+        lambda s: f"{'🟢' if s > 0.05 else '🔴' if s < -0.05 else '⚪'} {s:.3f}"
+    )
+    display["涨跌幅"] = display["change_pct"].apply(lambda v: f"{v:.2f}%")
+    display["主力资金"] = display["main_force_net_inflow"].apply(_format_inflow)
+    display["排名"] = display["rank"]
+    st.dataframe(
+        display[["排名", "board_name", "情绪", "涨跌幅", "主力资金"]],
+        column_config={
+            "rank": "排名",
+            "board_name": "板块名称",
+            "情绪": "情绪得分",
+            "涨跌幅": "涨跌幅",
+            "主力资金": "主力资金",
+        },
+        width='stretch', hide_index=True,
+    )
+
+    _render_sector_scatter(df)
+    _render_sector_downloads(df)
+
+
 def _render_sector_dashboard():
     st.subheader("🏭 板块情绪排行")
     st.caption("综合多个数据源计算出每个板块的情绪得分")
@@ -168,26 +633,35 @@ def _render_sector_dashboard():
         type_map = {"概念板块": "concept", "行业板块": "industry", "全部": "all"}
         top_n = st.selectbox("显示数量", [20, 30, 50, 100, "全部"], index=1, key="sector_top_n")
 
-    if st.sidebar.button("🔍 刷新板块数据", type="primary", use_container_width=True,
-                         key="sector_fetch_btn"):
+    col1, col2 = st.sidebar.columns(2)
+    if col1.button("🔍 刷新", type="primary", use_container_width=True,
+                   key="sector_fetch_btn"):
         st.session_state.sector_error = None
         with st.spinner("正在获取板块数据..."):
             try:
                 result = compute_sector_sentiment(board_type=type_map[board_type])
                 if result.empty:
                     st.session_state.sector_error = "API 返回空数据，东方财富接口可能暂时不可用"
+                else:
+                    hist.append_sector_snapshot(result)
                 st.session_state.sector_result = result
             except Exception as e:
                 st.session_state.sector_result = None
-                st.session_state.sector_error = f"连接失败：{type(e).__name__}"
+                st.session_state.sector_error = _fmt_error(e)
         st.rerun()
+
+    history_mode = col2.checkbox("历史快照", key="sector_hist_mode")
+    if history_mode:
+        _render_sector_history()
+        return
 
     result = st.session_state.get("sector_result")
     error = st.session_state.get("sector_error")
 
     if error:
-        st.error(f"⚠️ {error}")
-        st.info("👈 点击侧边栏「刷新板块数据」重试（东方财富接口有反爬限制，两次操作之间建议间隔 5 秒以上）")
+        st.error(f"⚠️ 数据获取失败")
+        st.code(error, language="")
+        st.info("👈 点击侧边栏「刷新」重试（东方财富接口有反爬限制，两次操作之间建议间隔 5 秒以上）")
         if st.button("🔄 重试", use_container_width=True):
             del st.session_state.sector_error
             st.rerun()
@@ -227,7 +701,7 @@ def _render_sector_dashboard():
     )
     st.plotly_chart(fig_hist, width='stretch')
 
-    # ── 排行表格 ──
+    # ── 排行 + 每行 expander ──
     st.subheader("🏆 板块情绪排行")
 
     show_all = top_n == "全部"
@@ -235,79 +709,71 @@ def _render_sector_dashboard():
     if not show_all:
         display = display.head(top_n)
 
-    display["情绪"] = display["sentiment_score"].apply(
-        lambda s: f"{'🟢' if s > 0.05 else '🔴' if s < -0.05 else '⚪'} {s:.3f}"
-    )
-    display["涨跌幅"] = display["change_pct"].apply(lambda v: f"{v:.2f}%")
-    display["主力资金"] = display["main_force_net_inflow"].apply(_format_inflow)
-    display["多空比"] = display["adv_dec_ratio"].apply(
-        lambda v: f"{v:.2f}" if pd.notna(v) and v != 0 else "—"
-    )
-    display["宽度"] = display["breadth_ratio"].apply(lambda v: f"{v:+.3f}")
-    display["异动"] = display["anomaly_count"].apply(lambda v: f"{int(v)}次" if pd.notna(v) else "—")
-    display["板块类型"] = display["board_type"].map({"concept": "概念", "industry": "行业"}).fillna("")
-    display["排名"] = display["rank"]
+    for _, row in display.iterrows():
+        cols = st.columns([1, 3, 1.5, 1.5, 1.5, 1.5, 1.5, 1])
+        score = row["sentiment_score"]
+        emoji = "🟢" if score > 0.05 else "🔴" if score < -0.05 else "⚪"
+        cols[0].markdown(f"**{row['rank']:.0f}**")
+        cols[1].markdown(f"**{row['board_name']}**")
+        cols[2].markdown(f"{emoji} {score:.3f}")
+        cols[3].markdown(f"{row['change_pct']:.2f}%")
+        cols[4].markdown(_format_inflow(row.get("main_force_net_inflow", 0)))
+        adv = row.get("advance", 0)
+        dec = row.get("decline", 0)
+        cols[5].markdown(f"{adv}/{dec}" if pd.notna(adv) and pd.notna(dec) else "—")
+        cols[6].markdown(f"{int(row.get('anomaly_count', 0))}次" if pd.notna(row.get('anomaly_count')) else "—")
 
-    table_cols = ["排名", "板块名称", "板块类型", "情绪", "涨跌幅", "主力资金",
-                   "多空比", "宽度", "异动"]
-    table_df = display[[c for c in table_cols if c in display.columns or c == "排名"]]
+        board_code = row.get("board_code", None)
+        with cols[7]:
+            if board_code:
+                expander_key = f"exp_{row['rank']:.0f}_{board_code}"
+                with st.expander("📄", expanded=False):
+                    _render_sector_hot_posts(board_code, row["board_name"])
+            else:
+                st.write("")
 
-    st.dataframe(
-        table_df,
-        column_config={
-            "排名": st.column_config.NumberColumn("排名", width="small"),
-            "板块名称": st.column_config.TextColumn("板块名称", width="medium"),
-            "板块类型": st.column_config.TextColumn("类型", width="small"),
-            "情绪": st.column_config.TextColumn("情绪得分", width="small"),
-            "涨跌幅": st.column_config.TextColumn("涨跌幅", width="small"),
-            "主力资金": st.column_config.TextColumn("主力资金", width="small"),
-            "多空比": st.column_config.TextColumn("多空比", width="small"),
-            "宽度": st.column_config.TextColumn("宽度指标", width="small"),
-            "异动": st.column_config.TextColumn("异动次数", width="small"),
-        },
-        width='stretch', hide_index=True,
-    )
+        st.divider()
 
-    # ── 情绪 vs 涨跌幅散点图 ──
-    st.subheader("📈 情绪 vs 涨跌幅")
-    scatter = result.copy()
-    scatter["color"] = scatter["sentiment_score"].apply(_sentiment_bar_color)
-    fig_scatter = go.Figure()
-    fig_scatter.add_trace(go.Scatter(
-        x=scatter["sentiment_score"],
-        y=scatter["change_pct"],
-        mode="markers+text",
-        text=scatter["board_name"],
-        textposition="top center",
-        marker=dict(
-            size=8,
-            color=scatter["sentiment_score"],
-            cmax=1, cmin=-1,
-            colorscale="RdBu",
-            line=dict(width=0.5, color="gray"),
-        ),
-        hovertemplate="<b>%{text}</b><br>情绪: %{x:.3f}<br>涨跌幅: %{y:.2f}%<extra></extra>",
-    ))
-    fig_scatter.add_hline(y=0, line_dash="dot", line_color="gray")
-    fig_scatter.add_vline(x=0, line_dash="dot", line_color="gray")
-    fig_scatter.update_layout(
-        height=400, margin=dict(l=10, r=10, t=10, b=10),
-        xaxis_title="情绪得分", yaxis_title="涨跌幅 (%)",
-        hovermode="closest",
-    )
-    st.plotly_chart(fig_scatter, width='stretch')
-
-    # ── 下载 ──
-    csv = result.to_csv(index=False)
-    st.download_button(
-        "📥 下载板块情绪数据 CSV",
-        data=csv,
-        file_name=f"sector_sentiment_{date.today()}.csv",
-        mime="text/csv",
-    )
+    _render_sector_scatter(result)
+    _render_sector_downloads(result)
 
 
 # ── 个股模式 ──────────────────────────────────────────────
+
+def _render_stock_history(symbol: str, src_key: str, source_name: str):
+    """展示个股历史情绪数据."""
+    st.subheader(f"📜 {symbol} 历史情绪")
+    c1, c2 = st.columns(2)
+    default_start = (date.today() - timedelta(days=90)).isoformat()
+    default_end = date.today().isoformat()
+    start = c1.date_input("开始日期", value=pd.to_datetime(default_start), key="sent_hist_start")
+    end = c2.date_input("结束日期", value=pd.to_datetime(default_end), key="sent_hist_end")
+
+    if c1.button("📊 查看历史", use_container_width=True, key="sent_hist_btn"):
+        with st.spinner("加载历史数据..."):
+            daily = hist.load_stock_daily(
+                symbol, src_key,
+                start=start.isoformat(), end=end.isoformat(),
+            )
+
+        if daily.empty:
+            st.info("该时间范围内无历史数据")
+            return
+
+        st.subheader("📈 历史聚合概览")
+        _render_metrics(daily)
+        _render_charts(daily)
+
+        raw = hist.load_stock_raw(
+            symbol, src_key,
+            start=start.isoformat(), end=end.isoformat(),
+        )
+        if not raw.empty:
+            st.subheader(f"📋 历史原始帖子 ({len(raw)} 条)")
+            _render_raw_posts(raw, source_name)
+
+        st.caption("💾 数据来自本地持久化存储，无需重新拉取")
+
 
 def _render_stock_dashboard():
     all_symbols = SymbolRegistry.list()
@@ -328,6 +794,15 @@ def _render_stock_dashboard():
     source_name = st.sidebar.radio("数据来源", ["股吧", "新闻"], horizontal=True, key="sent_source")
     src_key = "guba" if source_name == "股吧" else "news"
 
+    view_mode = st.sidebar.radio(
+        "视图", ["最新数据", "历史数据"],
+        horizontal=True, key="sent_view_mode",
+    )
+
+    if view_mode == "历史数据":
+        _render_stock_history(symbol, src_key, source_name)
+        return
+
     use_llm = st.sidebar.checkbox("使用 LLM 分析 (需 API key)", value=False, key="sent_llm")
 
     llm_client = None
@@ -338,22 +813,40 @@ def _render_stock_dashboard():
             llm_client = DeepSeekClient(api_key)
 
     if st.sidebar.button("🔍 拉取数据", type="primary", use_container_width=True):
+        st.session_state.sent_error = None
         with st.spinner(f"正在获取 {symbol} {source_name} 数据..."):
-            source = _SOURCES[src_key]
-            daily = source.fetch(
-                symbol,
-                start_date="20200101",
-                end_date=datetime.now().strftime("%Y%m%d"),
-                use_llm=use_llm,
-                llm_client=llm_client,
-            )
-            raw = source.fetch_raw_posts(symbol) if hasattr(source, "fetch_raw_posts") else pd.DataFrame()
+            try:
+                source = _SOURCES[src_key]
+                daily = source.fetch(
+                    symbol,
+                    start_date="20200101",
+                    end_date=datetime.now().strftime("%Y%m%d"),
+                    use_llm=use_llm,
+                    llm_client=llm_client,
+                )
+                raw = source.fetch_raw_posts(symbol) if hasattr(source, "fetch_raw_posts") else pd.DataFrame()
 
-        st.session_state.sent_daily = daily
-        st.session_state.sent_raw = raw
-        st.session_state.sent_fetched_symbol = symbol
-        st.session_state.sent_fetched_source = source_name
+                hist.append_stock_daily(symbol, src_key, daily)
+                if not raw.empty:
+                    hist.append_stock_raw(symbol, src_key, raw)
+
+                st.session_state.sent_daily = daily
+                st.session_state.sent_raw = raw
+                st.session_state.sent_fetched_symbol = symbol
+                st.session_state.sent_fetched_source = source_name
+            except Exception as e:
+                st.session_state.sent_error = _fmt_error(e)
         st.rerun()
+
+    sent_error = st.session_state.get("sent_error")
+    if sent_error:
+        st.error("⚠️ 数据获取失败")
+        st.code(sent_error, language="")
+        st.info("👈 点击侧边栏「拉取数据」重试（东方财富接口有反爬限制，两项操作之间建议间隔 5 秒以上）")
+        if st.button("🔄 重试", use_container_width=True, key="sent_retry_btn"):
+            del st.session_state.sent_error
+            st.rerun()
+        return
 
     daily = st.session_state.get("sent_daily")
     raw = st.session_state.get("sent_raw")

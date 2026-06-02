@@ -14,6 +14,7 @@ venv/
 
 # Cache
 cache/
+.cache/
 
 # PM2 / Runtime
 logs/
@@ -36,6 +37,9 @@ Thumbs.db
 *.orig
 *.bak
 tasks_registry.json
+
+# Historical sentiment data (auto-saved)
+history/sentiment/
 
 # User data
 data/symbol_registry.json

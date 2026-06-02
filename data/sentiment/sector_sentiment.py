@@ -64,6 +64,7 @@ def fetch_concept_boards() -> pd.DataFrame:
         return pd.DataFrame()
     df = df.rename(columns={
         "板块名称": "board_name",
+        "板块代码": "board_code",
         "涨跌幅": "change_pct",
         "上涨家数": "advance",
         "下跌家数": "decline",
@@ -73,37 +74,39 @@ def fetch_concept_boards() -> pd.DataFrame:
         "领涨股票-涨跌幅": "lead_stock_pct",
         "最新价": "price",
     })
+    df = df.loc[:, ~df.columns.duplicated(keep="first")]
     df["board_type"] = "concept"
     return df
 
 
 def fetch_industry_boards() -> pd.DataFrame:
-    """获取行业板块列表, 含涨跌家数."""
+    """获取行业板块列表, 含涨跌家数.
+
+    列名精确匹配已知的 AKShare 映射, 避免 `in` 匹配导致误将多个不同列
+    映射到同一英文名 (如 "涨跌幅" 和 "行业涨跌幅" 都被映射为 change_pct).
+    不认识的列自动丢弃.
+    """
     import akshare as ak
     df = _ak_call(ak.stock_board_industry_name_em)
     if df is None or df.empty:
         return pd.DataFrame()
-    rename_map = {}
-    for c in df.columns:
-        if "板块名称" in c:
-            rename_map[c] = "board_name"
-        elif "涨跌幅" in c:
-            rename_map[c] = "change_pct"
-        elif "上涨家数" in c:
-            rename_map[c] = "advance"
-        elif "下跌家数" in c:
-            rename_map[c] = "decline"
-        elif "换手率" in c:
-            rename_map[c] = "turnover"
-        elif "总市值" in c:
-            rename_map[c] = "market_value"
-        elif "领涨股票" in c and "涨跌幅" not in c:
-            rename_map[c] = "lead_stock"
-        elif "领涨股票" in c and "涨跌幅" in c:
-            rename_map[c] = "lead_stock_pct"
-        elif "最新价" in c or "最新" in c:
-            rename_map[c] = "price"
+
+    KNOWN = {
+        "板块名称": "board_name",
+        "涨跌幅": "change_pct",
+        "上涨家数": "advance",
+        "下跌家数": "decline",
+        "换手率": "turnover",
+        "总市值": "market_value",
+        "领涨股票": "lead_stock",
+        "领涨股票-涨跌幅": "lead_stock_pct",
+        "最新价": "price",
+    }
+    rename_map = {k: v for k, v in KNOWN.items() if k in df.columns}
     df = df.rename(columns=rename_map)
+    wanted = list(rename_map.values())
+    df = df[[c for c in wanted if c in df.columns]]
+    df = df.loc[:, ~df.columns.duplicated(keep="first")]
     df["board_type"] = "industry"
     return df
 
@@ -138,8 +141,57 @@ def fetch_board_anomalies() -> pd.DataFrame:
     return out
 
 
+def fetch_board_constituents(board_code: str, top_n: int = 5) -> pd.DataFrame:
+    """获取板块成分股行情.
+
+    Args:
+        board_code: 板块代码, 如 "BK0890"
+        top_n: 返回前 N 支股票 (按涨跌幅绝对值排序)
+
+    Returns:
+        DataFrame 含 symbol, name, change_pct, price, turnover
+    """
+    import akshare as ak
+    df = _ak_call(ak.stock_board_concept_cons_em, symbol=board_code)
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    col_map = {}
+    for c in df.columns:
+        if "代码" in c:
+            col_map[c] = "symbol"
+        elif "名称" in c:
+            col_map[c] = "name"
+        elif c == "涨跌幅":
+            col_map[c] = "change_pct"
+        elif "最新价" in c or "最新" in c:
+            col_map[c] = "price"
+        elif "换手率" in c:
+            col_map[c] = "turnover"
+    df = df.rename(columns=col_map)
+    out = df[[c for c in ["symbol", "name", "change_pct", "price", "turnover"] if c in df.columns]].copy()
+    if "symbol" not in out.columns:
+        return pd.DataFrame()
+    out = out.dropna(subset=["symbol"])
+    if out.empty:
+        return pd.DataFrame()
+    if "change_pct" in out.columns:
+        out["change_pct"] = pd.to_numeric(out["change_pct"], errors="coerce")
+        out["abs_change"] = out["change_pct"].abs()
+        out = out.sort_values("abs_change", ascending=False).head(top_n)
+        out = out.drop(columns=["abs_change"])
+    else:
+        out = out.head(top_n)
+    return out.reset_index(drop=True)
+
+
 def _normalize(s: pd.Series, cap: float = 3.0) -> pd.Series:
     """鲁棒归一化到 [-1, 1], 用分位数截断 outlier."""
+    import warnings
+    if isinstance(s, pd.DataFrame):
+        dup = s.columns.tolist()
+        warnings.warn(f"_normalize 收到 DataFrame 而非 Series，列重复: {dup}，取第一列降级")
+        s = s.iloc[:, 0]
     clipped = s.clip(lower=s.quantile(0.05), upper=s.quantile(0.95))
     r = clipped.max() - clipped.min()
     if r < 1e-10:
@@ -196,6 +248,18 @@ def compute_sector_sentiment(
     except Exception:
         pass
 
+    # 2b. 去重 — 防止列名重复导致 df["col"] 返回 DataFrame
+    import warnings as _warnings
+    dup_cols = df.columns[df.columns.duplicated()].tolist()
+    if dup_cols:
+        _warnings.warn(f"compute_sector_sentiment 发现重复列: {dup_cols}，自动去重")
+        df = df.loc[:, ~df.columns.duplicated(keep="first")]
+
+    # 2c. 补齐异常数据的缺失列 (异动接口失败时 protect 后续计算)
+    for col in ["main_force_net_inflow", "anomaly_count", "anomaly_direction", "anomaly_lead_stock"]:
+        if col not in df.columns:
+            df[col] = 0 if col != "anomaly_lead_stock" else ""
+
     # 3. 计算因子
     total = df["advance"] + df["decline"]
     df["breadth_ratio"] = np.where(total > 0, (df["advance"] - df["decline"]) / total, 0.0)
@@ -225,12 +289,12 @@ def compute_sector_sentiment(
         (df["advance"] / df["decline"]).round(2),
         df["advance"].astype(float),
     )
-    for col in ["main_force_net_inflow", "anomaly_count", "lead_stock"]:
+    for col in ["lead_stock"]:
         if col not in df.columns:
-            df[col] = 0 if col != "lead_stock" else ""
+            df[col] = ""
 
     cols = [
-        "board_name", "board_type", "sentiment_score",
+        "board_name", "board_code", "board_type", "sentiment_score",
         "change_pct", "breadth_ratio", "adv_dec_ratio",
         "main_force_net_inflow", "anomaly_count",
         "anomaly_direction", "lead_stock", "turnover",
