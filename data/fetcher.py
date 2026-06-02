@@ -523,4 +523,66 @@ def fetch_etf_realtime_premium(symbol: str) -> float:
     return 0.0
 
 
+# ══════════════════════════════════════════
+#  8.  情感数据获取
+# ══════════════════════════════════════════
+
+SENTIMENT_SOURCES = {}
+
+
+def _get_sentiment_sources():
+    """延迟加载情感数据源."""
+    global SENTIMENT_SOURCES
+    if not SENTIMENT_SOURCES:
+        from data.sentiment.guba import GubaSource
+        from data.sentiment.news import NewsSource
+        SENTIMENT_SOURCES = {
+            "guba": GubaSource(),
+            "news": NewsSource(),
+        }
+    return SENTIMENT_SOURCES
+
+
+def fetch_sentiment_data(
+    symbol: str,
+    asset_type: str = "stock",
+    start_date: str = "20000101",
+    end_date: Optional[str] = None,
+    use_llm: bool = False,
+    llm_client=None,
+) -> pd.DataFrame:
+    """获取情感数据, 返回日频 DataFrame, 索引为 DatetimeIndex.
+
+    合并所有可用情感数据源 (当前: 东方财富股吧).
+    列: sentiment_score, post_volume, bull_bear_ratio, disagreement, heat_index
+    """
+    if end_date is None:
+        end_date = datetime.now().strftime("%Y%m%d")
+
+    sources = _get_sentiment_sources()
+    all_daily = []
+
+    for src_name, src in sources.items():
+        try:
+            df = src.fetch(symbol, start_date, end_date,
+                           use_llm=use_llm, llm_client=llm_client)
+            if df is not None and not df.empty:
+                all_daily.append(df)
+        except Exception:
+            continue
+
+    if not all_daily:
+        return pd.DataFrame()
+
+    merged = all_daily[0]
+    for df in all_daily[1:]:
+        for col in df.columns:
+            if col not in merged.columns:
+                merged[col] = df[col]
+            else:
+                merged[col] = merged[col].fillna(df[col])
+
+    return merged
+
+
 clear_expired()

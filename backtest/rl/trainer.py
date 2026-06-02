@@ -48,11 +48,18 @@ def train_dqn(
     dd_penalty_coef: float = 0.5,
     progress_callback=None,
     cancel_check=None,
+    symbol: str = "",
 ) -> tuple:
     if feature_groups is None:
         feature_groups = DEFAULT_FEATURE_GROUPS
     close = _close_col(df_train)
     indicators = compute_technical_indicators(df_train)
+    if "sentiment" in feature_groups:
+        from data.fetcher import fetch_sentiment_data
+        df_sent = fetch_sentiment_data(symbol)
+        if df_sent is not None and not df_sent.empty:
+            indicators = indicators.merge(df_sent, left_index=True, right_index=True, how="left")
+            indicators = indicators.ffill().fillna(0)
     _, raw_cols = get_selected_columns(feature_groups)
     indicators = normalize_indicators(indicators, raw_columns=raw_cols)
 
@@ -147,11 +154,18 @@ def evaluate(
     commission_rate: float = 0.00025,
     min_commission: float = 5.0,
     stamp_duty: float = 0.001,
+    symbol: str = "",
 ) -> dict:
     if feature_groups is None:
         feature_groups = DEFAULT_FEATURE_GROUPS
     close = _close_col(df_test)
     indicators = compute_technical_indicators(df_test)
+    if "sentiment" in feature_groups:
+        from data.fetcher import fetch_sentiment_data
+        df_sent = fetch_sentiment_data(symbol)
+        if df_sent is not None and not df_sent.empty:
+            indicators = indicators.merge(df_sent, left_index=True, right_index=True, how="left")
+            indicators = indicators.ffill().fillna(0)
     _, raw_cols = get_selected_columns(feature_groups)
     indicators = normalize_indicators(indicators, raw_columns=raw_cols)
 

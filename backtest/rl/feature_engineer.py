@@ -78,6 +78,16 @@ FEATURE_GROUPS = {
         "default": False,
         "help": "成交量异常放大、波动率扩张、布林带扩张 — 顶部反转预警",
     },
+    "sentiment": {
+        "label": "情绪指标 (股吧讨论)",
+        "columns": [
+            "sentiment_score", "post_volume", "bull_bear_ratio",
+            "disagreement", "heat_index",
+        ],
+        "raw_columns": [],
+        "default": False,
+        "help": "东方财富股吧讨论情绪 (词典/LLM) — 情感得分、帖量、多空比、分歧度、热度",
+    },
 }
 
 DEFAULT_FEATURE_GROUPS = [k for k, v in FEATURE_GROUPS.items() if v.get("default", False)]

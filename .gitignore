@@ -39,3 +39,6 @@ tasks_registry.json
 
 # User data
 data/symbol_registry.json
+
+# Secrets (may contain API keys)
+.streamlit/secrets.toml

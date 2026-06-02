@@ -27,12 +27,14 @@ def _rl_train_task(params, task_id=None, cancel_check=None):
         episodes_done[0] = ep + 1
         mgr.update_progress(task_id, (ep + 1) / total, progress_data=(ep, loss))
 
+    sym = params["meta"]["symbol"]
     agent, _, agent_best = train_dqn(
         params["df_train"],
         system_version=params["system_version"],
         feature_groups=params["feature_groups"],
         progress_callback=progress,
         cancel_check=cancel_check,
+        symbol=sym,
         **params["dqn_params"],
         **params["fee_params"],
     )
@@ -42,10 +44,12 @@ def _rl_train_task(params, task_id=None, cancel_check=None):
     result_dqn = evaluate(agent, params["df_test"],
                           system_version=params["system_version"],
                           feature_groups=params["feature_groups"],
+                          symbol=sym,
                           **params["fee_params"])
     result_dqn_best = evaluate(agent_best, params["df_test"],
                                system_version=params["system_version"],
                                feature_groups=params["feature_groups"],
+                               symbol=sym,
                                **params["fee_params"]) if agent_best else None
     result_bh = run_bh_baseline(params["df_test"],
                                 initial_capital=params["fee_params"]["initial_capital"])
@@ -109,16 +113,17 @@ def _hyperparam_search_task(params, task_id=None, cancel_check=None):
 
     bp = hp_result.get("best_params")
     val_result = bh_val = agent = None
+    sym = meta.get("symbol", "")
     if bp is not None and not was_cancelled:
         agent, _, _ = train_dqn(
             df_train, system_version=sv, feature_groups=fg,
             n_episodes=bp["n_episodes"], lr=bp["lr"], gamma=bp["gamma"],
             hidden=bp["hidden"], epsilon_decay=bp["epsilon_decay"],
             progress_callback=None, cancel_check=cancel_check,
-            **fee,
+            symbol=sym, **fee,
         )
         val_result = evaluate(agent, df_val, system_version=sv,
-                              feature_groups=fg, **fee)
+                              feature_groups=fg, symbol=sym, **fee)
         bh_val = run_bh_baseline(df_val, initial_capital=fee["initial_capital"])
 
     return {
