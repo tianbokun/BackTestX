@@ -378,8 +378,8 @@ def _build_export_image(result: pd.DataFrame) -> bytes | None:
     bot_name = result.iloc[-1]["board_name"]
     bot_score = result.iloc[-1]["sentiment_score"]
 
-    fig = plt.figure(figsize=(14, 13), facecolor="white")
-    gs = fig.add_gridspec(5, 1, height_ratios=[0.07, 0.28, 0.18, 0.34, 0.13], hspace=0.65)
+    fig = plt.figure(figsize=(14, 24), facecolor="white")
+    gs = fig.add_gridspec(5, 1, height_ratios=[0.07, 0.25, 0.16, 0.42, 0.10], hspace=0.65)
 
     # ── 标题行 ──
     ax_title = fig.add_subplot(gs[0, 0])
@@ -457,7 +457,7 @@ def _build_export_image(result: pd.DataFrame) -> bytes | None:
     # ── 排行表 ──
     ax_tbl = fig.add_subplot(gs[3, 0])
     ax_tbl.axis("off")
-    ax_tbl.set_title("板块排行 Top / Bottom 5", fontsize=12, fontweight="bold", pad=10)
+    ax_tbl.set_title("板块排行 Top / Bottom 20", fontsize=12, fontweight="bold", pad=10)
 
     # ── 免责声明 ──
     ax_footer = fig.add_subplot(gs[4, 0])
@@ -481,14 +481,14 @@ def _build_export_image(result: pd.DataFrame) -> bytes | None:
         transform=ax_footer.transAxes,
     )
 
-    n = min(5, total)
-    top5 = result.head(n)[["rank", "board_name", "sentiment_score", "change_pct"]].copy()
-    bot5 = result.tail(n)[["rank", "board_name", "sentiment_score", "change_pct"]].copy()
+    n = min(20, total)
+    top = result.head(n)[["rank", "board_name", "sentiment_score", "change_pct"]].copy()
+    bot = result.tail(n)[["rank", "board_name", "sentiment_score", "change_pct"]].copy()
     data_rows = []
-    for _, r in top5.iterrows():
+    for _, r in top.iterrows():
         data_rows.append([int(r["rank"]), r["board_name"], f"{r['sentiment_score']:.4f}", f"{r['change_pct']:.2f}%"])
     data_rows.append(["…", "", "", ""])
-    for _, r in bot5.iterrows():
+    for _, r in bot.iterrows():
         data_rows.append([int(r["rank"]), r["board_name"], f"{r['sentiment_score']:.4f}", f"{r['change_pct']:.2f}%"])
 
     col_labels = ["排名", "板块名称", "情绪得分", "涨跌幅(%)"]
@@ -511,7 +511,7 @@ def _build_export_image(result: pd.DataFrame) -> bytes | None:
         else:
             cell.set_facecolor(row_colors[row - 1] if row - 1 < len(row_colors) else "#ffffff")
         cell.set_edgecolor("#e5e7eb")
-        cell.set_height(0.09)
+        cell.set_height(0.024)
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=200, bbox_inches="tight", facecolor="white")
