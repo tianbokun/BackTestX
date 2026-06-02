@@ -470,16 +470,16 @@ if needs_sidebar_symbol:
 #  主路由
 # ══════════════════════════════════════════════════════════════
 
-if mode.startswith("📊"):
+if mode == "📊 定投回测":
     render_dca_backtest(price_series, start_date, end_date)
+elif mode.startswith("📊 情绪"):
+    render_sentiment_dashboard()
 elif mode.startswith("🎯"):
     render_grid_search(price_series, start_date, end_date, symbol)
 elif mode.startswith("🤖"):
     render_rl_training(end_date, adjust)
 elif mode.startswith("🧠"):
     render_hierarchical_rl(end_date, adjust)
-elif mode.startswith("📊 情绪"):
-    render_sentiment_dashboard()
 elif mode == "📋 训练任务":
     render_task_manager()
 elif mode.startswith("📋"):
