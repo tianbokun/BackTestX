@@ -246,6 +246,7 @@ def _render_sector_dashboard():
     display["宽度"] = display["breadth_ratio"].apply(lambda v: f"{v:+.3f}")
     display["异动"] = display["anomaly_count"].apply(lambda v: f"{int(v)}次" if pd.notna(v) else "—")
     display["板块类型"] = display["board_type"].map({"concept": "概念", "industry": "行业"}).fillna("")
+    display["排名"] = display["rank"]
 
     table_cols = ["排名", "板块名称", "板块类型", "情绪", "涨跌幅", "主力资金",
                    "多空比", "宽度", "异动"]
