@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from data_fetcher import ASSET_TYPE_CONFIG, get_price_series
 from ui._helpers import cached_fetch
-from utils.i18n import t, init_language
+from utils.i18n import t, init_language, set_language
 from ui.dca_backtest import render_dca_backtest
 from ui.grid_search import render_grid_search
 from ui.rl_training import render_rl_training
@@ -337,11 +337,12 @@ def _inject_global_styles():
     }
 
     /* ── Language switcher top-right ── */
-    .lang-switcher {
+    .lang-sw-visual {
         position: fixed;
-        top: 0.4rem;
+        top: 0.65rem;
         right: 3.2rem;
-        z-index: 999999;
+        z-index: 999998;
+        pointer-events: none;
         font-size: 0.78rem;
         background: rgba(255,255,255,0.95);
         padding: 2px 10px;
@@ -349,14 +350,46 @@ def _inject_global_styles():
         border: 1px solid #e2e8f0;
         backdrop-filter: blur(4px);
         box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+        display: flex;
+        align-items: center;
+        gap: 4px;
         line-height: 1.6;
     }
-    .lang-switcher a { text-decoration: none; padding: 0 2px; }
-    .lang-switcher .lang-active { color: #2563eb; font-weight: 600; }
-    .lang-switcher .lang-inactive { color: #94a3b8; }
-    .lang-switcher .lang-inactive:hover { color: #2563eb; }
-    .lang-switcher .lang-sep { color: #cbd5e1; margin: 0 4px; }
+    .lang-item { color: #94a3b8; cursor: pointer; }
+    .lang-item.lang-active { color: #2563eb; font-weight: 600; }
+    .lang-sep { color: #cbd5e1; }
+    /* Interactive overlay — invisible buttons on top of visual */
+    div[data-testid="stHorizontalBlock"]:has(button#sw_zh) {
+        position: fixed !important;
+        top: 0.65rem !important;
+        right: 3.2rem !important;
+        z-index: 999999 !important;
+        opacity: 0.01 !important;
+        width: auto !important;
+        gap: 0 !important;
+        display: flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        height: 28px !important;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(button#sw_zh) button {
+        min-width: 50px !important;
+        min-height: 24px !important;
+        background: transparent !important;
+        border: none !important;
+        cursor: pointer !important;
+    }
+    /* Collapse the normal-flow container so it leaves no gap */
+    div[data-testid="stElementContainer"]:has(> div[data-testid="stHorizontalBlock"] button#sw_zh) {
+        height: 0 !important;
+        overflow: hidden !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        min-height: 0 !important;
+    }
 
     /* ── Responsive ── */
     @media (max-width: 768px) {
@@ -388,14 +421,30 @@ _inject_global_styles()
 init_language()
 
 _lang = st.session_state.get("_lang", "zh")
+
+def _sw_zh():
+    set_language("zh"); st.rerun()
+def _sw_en():
+    set_language("en"); st.rerun()
+
+# Visual overlay (non-interactive, shows active state)
 st.markdown(
-    f'<div class="lang-switcher">'
-    f'<a href="?lang=zh" class="{"lang-active" if _lang=="zh" else "lang-inactive"}">简体中文</a>'
+    f'<div class="lang-sw-visual">'
+    f'<span class="lang-item{" lang-active" if _lang=="zh" else ""}">简体中文</span>'
     f'<span class="lang-sep">|</span>'
-    f'<a href="?lang=en" class="{"lang-active" if _lang=="en" else "lang-inactive"}">English</a>'
+    f'<span class="lang-item{" lang-active" if _lang=="en" else ""}">English</span>'
     f'</div>',
     unsafe_allow_html=True,
 )
+
+# Interactive layer (invisible buttons on top)
+_ph = st.empty()
+with _ph:
+    _b1, _b2 = st.columns([1, 1])
+    with _b1: st.button("简体中文", key="sw_zh", on_click=_sw_zh, use_container_width=True)
+    with _b2: st.button("English", key="sw_en", on_click=_sw_en, use_container_width=True)
+
+st.markdown('<div id="lang-sw-spacer"></div>', unsafe_allow_html=True)
 
 # ── Session state init ──
 for key in ("rl_agent", "rl_model_info", "rl_hp_agent", "rl_hp_params",
