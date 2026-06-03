@@ -3,15 +3,65 @@
 合并多个东方财富数据源, 计算每个板块的综合情绪得分.
 """
 
-import random
+import hashlib
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 _SESSION = None
 
+# ── 板块数据缓存 ──────────────────────────────────────────
+_SECTOR_CACHE_DIR = Path(__file__).parent.parent.parent / "cache" / "sector"
+_SECTOR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+SECTOR_CACHE_TTL = 3600  # 秒, 1 小时
+
+
+def _cache_key(name: str) -> str:
+    return hashlib.md5(f"sector_{name}".encode()).hexdigest()
+
+
+def _read_cache(name: str) -> Optional[pd.DataFrame]:
+    path = _SECTOR_CACHE_DIR / f"{_cache_key(name)}.parquet"
+    if not path.exists():
+        return None
+    age = datetime.now().timestamp() - path.stat().st_mtime
+    if age > SECTOR_CACHE_TTL:
+        return None
+    try:
+        return pd.read_parquet(path)
+    except Exception:
+        return None
+
+
+def _write_cache(name: str, df: pd.DataFrame):
+    if df.empty:
+        return
+    try:
+        path = _SECTOR_CACHE_DIR / f"{_cache_key(name)}.parquet"
+        df.to_parquet(path)
+    except Exception:
+        pass
+
+
+def _clear_expired_sector_cache():
+    """清理过期缓存 (TTL 两倍)."""
+    now = datetime.now().timestamp()
+    for f in _SECTOR_CACHE_DIR.glob("*.parquet"):
+        if now - f.stat().st_mtime > SECTOR_CACHE_TTL * 2:
+            f.unlink(missing_ok=True)
+
+
+# ── Session ──────────────────────────────────────────────
 
 def _get_session():
     global _SESSION
@@ -29,39 +79,56 @@ def _get_session():
     return _SESSION
 
 
-def _ak_call(fn, retries=3, delay=2, *args, **kwargs):
-    """带重试和延迟的 AKShare 调用，使用共享 Session 减少被识别为爬虫的概率.
+def _reset_session():
+    """重置全局 Session, 断开旧连接."""
+    global _SESSION
+    _SESSION = None
 
-    重试策略: 指数退避 + 随机 jitter, 捕获 ConnectionError 时先换 Session.
+
+def _ak_call(fn, *args, **kwargs):
+    """带指数退避重试的 AKShare 调用.
+
+    使用 tenacity 自动重试, 捕获 ConnectionError / ProtocolError /
+    ConnectionResetError, 每次重试前重置 Session.
     """
     from requests.exceptions import ConnectionError as ReqConnectionError
 
-    for attempt in range(retries + 1):
-        try:
-            return fn(*args, **kwargs)
-        except ReqConnectionError as e:
-            # 服务端主动断开 → 重置 session, 下次重新建立连接
-            global _SESSION
-            _SESSION = None
-            if attempt < retries:
-                wait = delay * (2 ** attempt) + random.uniform(0, 1)
-                time.sleep(wait)
-                continue
-            raise
-        except Exception as e:
-            if attempt < retries:
-                wait = delay * (attempt + 1) + random.uniform(0, 0.5)
-                time.sleep(wait)
-                continue
-            raise
+    _call_attempts = 0
+
+    @retry(
+        stop=stop_after_attempt(4),
+        wait=wait_exponential(multiplier=1.5, min=2, max=20),
+        retry=retry_if_exception_type(
+            (ReqConnectionError, ConnectionResetError, OSError)
+        ),
+        reraise=True,
+    )
+    def _call():
+        nonlocal _call_attempts
+        _call_attempts += 1
+        if _call_attempts > 1:
+            _reset_session()
+            time.sleep(1)
+        return fn(*args, **kwargs)
+
+    return _call()
 
 
-def fetch_concept_boards() -> pd.DataFrame:
-    """获取概念板块列表 (486个), 含涨跌家数."""
+def fetch_concept_boards(use_cache: bool = True) -> pd.DataFrame:
+    """获取概念板块列表 (486个), 含涨跌家数.
+
+    Args:
+        use_cache: 是否使用本地缓存 (1 小时 TTL).
+    """
+    if use_cache:
+        cached = _read_cache("concept_boards")
+        if cached is not None:
+            return cached
     import akshare as ak
     df = _ak_call(ak.stock_board_concept_name_em)
     if df is None or df.empty:
         return pd.DataFrame()
+    _write_cache("concept_boards", df)
     df = df.rename(columns={
         "板块名称": "board_name",
         "板块代码": "board_code",
@@ -79,15 +146,25 @@ def fetch_concept_boards() -> pd.DataFrame:
     return df
 
 
-def fetch_industry_boards() -> pd.DataFrame:
+def fetch_industry_boards(use_cache: bool = True) -> pd.DataFrame:
     """获取行业板块列表, 含涨跌家数.
+
+    Args:
+        use_cache: 是否使用本地缓存 (1 小时 TTL).
 
     列名精确匹配已知的 AKShare 映射, 避免 `in` 匹配导致误将多个不同列
     映射到同一英文名 (如 "涨跌幅" 和 "行业涨跌幅" 都被映射为 change_pct).
     不认识的列自动丢弃.
     """
+    if use_cache:
+        cached = _read_cache("industry_boards")
+        if cached is not None:
+            return cached
     import akshare as ak
     df = _ak_call(ak.stock_board_industry_name_em)
+    if df is None or df.empty:
+        return pd.DataFrame()
+    _write_cache("industry_boards", df)
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -303,3 +380,13 @@ def compute_sector_sentiment(
     result = result.sort_values("sentiment_score", ascending=False).reset_index(drop=True)
     result["rank"] = range(1, len(result) + 1)
     return result
+
+
+def clear_sector_cache():
+    """清空板块缓存, 下次 fetch 时重新请求."""
+    for f in _SECTOR_CACHE_DIR.glob("*.parquet"):
+        f.unlink(missing_ok=True)
+
+
+# 启动时清理过期缓存
+_clear_expired_sector_cache()
