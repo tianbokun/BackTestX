@@ -49,4 +49,17 @@ def set_language(lang: str):
     st.query_params["lang"] = lang
 
 
-
+def render_lang_switcher():
+    """Language toggle in sidebar."""
+    lang = st.session_state.get("_lang", "zh")
+    new = st.selectbox(
+        "Language / 语言",
+        options=["zh", "en"],
+        format_func=lambda x: "🇨🇳 中文" if x == "zh" else "🇬🇧 English",
+        index=0 if lang == "zh" else 1,
+        key="_lang_selector",
+        label_visibility="collapsed",
+    )
+    if new != lang:
+        set_language(new)
+        st.rerun()
