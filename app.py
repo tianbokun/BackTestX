@@ -336,16 +336,6 @@ def _inject_global_styles():
         overflow: hidden;
     }
 
-    /* ── Language switcher top-right ── */
-    div[data-testid="stHorizontalBlock"]:has(> div > div > div[data-testid="stSelectbox"]) + div[data-testid="stVerticalBlock"] {
-        margin-top: 0 !important;
-    }
-    .lang-switcher select {
-        font-size: 0.8rem !important;
-        padding: 2px 8px !important;
-        min-height: unset !important;
-    }
-
     /* ── Responsive ── */
     @media (max-width: 768px) {
         .main > div { padding: 0.5rem 1rem 2rem; }
@@ -391,10 +381,6 @@ for key in ("rl_model_just_saved",):
 # ══════════════════════════════════════════════════════════════
 
 _TAB_KEYS = ["dca", "grid", "rl", "hrl", "sentiment", "task", "symbol"]
-
-_lang_col1, _lang_col2 = st.columns([5, 1])
-with _lang_col2:
-    render_lang_switcher()
 _TAB_LOCALE = {
     "dca": "app.tab.dca",
     "grid": "app.tab.grid",
@@ -465,6 +451,8 @@ adjust = st.sidebar.selectbox(
     format_func=lambda x: t(_ADJUST_MAP[x]),
     index=0,
 )
+
+render_lang_switcher()
 
 
 # ══════════════════════════════════════════════════════════════
