@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from data_fetcher import ASSET_TYPE_CONFIG, get_price_series
 from ui._helpers import cached_fetch
-from utils.i18n import t, init_language, render_lang_switcher
+from utils.i18n import t, init_language
 from ui.dca_backtest import render_dca_backtest
 from ui.grid_search import render_grid_search
 from ui.rl_training import render_rl_training
@@ -337,14 +337,26 @@ def _inject_global_styles():
     }
 
     /* ── Language switcher top-right ── */
-    div[data-testid="stHorizontalBlock"]:has(> div > div > div[data-testid="stSelectbox"]) + div[data-testid="stVerticalBlock"] {
-        margin-top: 0 !important;
+    .lang-switcher {
+        position: fixed;
+        top: 0.4rem;
+        right: 3.2rem;
+        z-index: 999999;
+        font-size: 0.78rem;
+        background: rgba(255,255,255,0.95);
+        padding: 2px 10px;
+        border-radius: 6px;
+        border: 1px solid #e2e8f0;
+        backdrop-filter: blur(4px);
+        box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+        line-height: 1.6;
     }
-    .lang-switcher select {
-        font-size: 0.8rem !important;
-        padding: 2px 8px !important;
-        min-height: unset !important;
-    }
+    .lang-switcher a { text-decoration: none; padding: 0 2px; }
+    .lang-switcher .lang-active { color: #2563eb; font-weight: 600; }
+    .lang-switcher .lang-inactive { color: #94a3b8; }
+    .lang-switcher .lang-inactive:hover { color: #2563eb; }
+    .lang-switcher .lang-sep { color: #cbd5e1; margin: 0 4px; }
 
     /* ── Responsive ── */
     @media (max-width: 768px) {
@@ -375,6 +387,16 @@ st.set_page_config(
 _inject_global_styles()
 init_language()
 
+_lang = st.session_state.get("_lang", "zh")
+st.markdown(
+    f'<div class="lang-switcher">'
+    f'<a href="?lang=zh" class="{"lang-active" if _lang=="zh" else "lang-inactive"}">简体中文</a>'
+    f'<span class="lang-sep">|</span>'
+    f'<a href="?lang=en" class="{"lang-active" if _lang=="en" else "lang-inactive"}">English</a>'
+    f'</div>',
+    unsafe_allow_html=True,
+)
+
 # ── Session state init ──
 for key in ("rl_agent", "rl_model_info", "rl_hp_agent", "rl_hp_params",
             "rl_trained_agent", "rl_dqn_result", "rl_bh_result", "rl_train_meta"):
@@ -391,10 +413,6 @@ for key in ("rl_model_just_saved",):
 # ══════════════════════════════════════════════════════════════
 
 _TAB_KEYS = ["dca", "grid", "rl", "hrl", "sentiment", "task", "symbol"]
-
-_lang_col1, _lang_col2 = st.columns([5, 1])
-with _lang_col2:
-    render_lang_switcher()
 _TAB_LOCALE = {
     "dca": "app.tab.dca",
     "grid": "app.tab.grid",
