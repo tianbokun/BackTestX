@@ -15,6 +15,7 @@ from tenacity import (
     retry,
     retry_if_exception_type,
     stop_after_attempt,
+    stop_after_delay,
     wait_exponential,
 )
 
@@ -88,8 +89,8 @@ def _reset_session():
 def _ak_call(fn, *args, **kwargs):
     """带指数退避重试的 AKShare 调用.
 
-    使用 tenacity 自动重试, 捕获 ConnectionError / ConnectionResetError /
-    OSError, 每次重试前重置 Session.
+    最多尝试 30 分钟, 使用 tenacity 自动重试, 捕获 ConnectionError /
+    ConnectionResetError / OSError, 每次重试前重置 Session 并提示用户.
     """
     from requests.exceptions import ConnectionError as ReqConnectionError
 
@@ -99,7 +100,12 @@ def _ak_call(fn, *args, **kwargs):
         exc = retry_state.outcome.exception()
         attempt = retry_state.attempt_number
         wait = int(retry_state.next_action.sleep) if retry_state.next_action else 2
-        msg = f"⚠️ 连接失败 (第{attempt}次重试, 等待{wait}s): {type(exc).__name__}"
+        elapsed = int(retry_state.seconds_since_start)
+        remaining = max(0, 1800 - elapsed)
+        msg = (
+            f"⚠️ 连接失败 (第{attempt}次重试, 等待{wait}s, "
+            f"剩余{remaining // 60}分{remaining % 60}秒): {type(exc).__name__}"
+        )
         print(f"[sector_sentiment] {msg}", flush=True)
         try:
             import streamlit as st
@@ -108,8 +114,8 @@ def _ak_call(fn, *args, **kwargs):
             pass
 
     @retry(
-        stop=stop_after_attempt(4),
-        wait=wait_exponential(multiplier=1.5, min=2, max=20),
+        stop=stop_after_delay(1800) | stop_after_attempt(50),
+        wait=wait_exponential(multiplier=1.5, min=2, max=300),
         retry=retry_if_exception_type(
             (ReqConnectionError, ConnectionResetError, OSError)
         ),
