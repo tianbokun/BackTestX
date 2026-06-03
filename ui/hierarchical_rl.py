@@ -5,7 +5,6 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 
-from utils.i18n import t
 from backtest.rl.hierarchical_trainer import (
     HierarchicalTrainer,
     fetch_multi_etf_data,
@@ -117,28 +116,35 @@ def _load_task_result(task_id: str):
     st.session_state.hrl_capital = result["capital"]
     st.session_state.hrl_test_dates = result["test_dates"]
     st.session_state.hrl_selected_symbols = result.get("selected_symbols", [])
-    st.session_state.mode_tab = "hrl"
+    st.session_state.mode_tab = "🧠 分层RL"
 
 
 def render_hierarchical_rl(end_date, adjust):
     _init_session_keys()
 
-    st.title(t("hrl.title"))
+    st.title("🧠 分层强化学习 (PPO + DQN)")
 
-    st.markdown(t("hrl.desc"), unsafe_allow_html=True)
+    st.markdown("""
+    <div style="background:#f0f4ff;border-radius:10px;padding:1rem 1.25rem;margin-bottom:1.5rem;font-size:0.9rem;color:#1e293b">
+    <b>架构说明：</b><br>
+    <b>上层 (PPO)</b> — 择时：根据市场状态决定总仓位比例 (0%~100%)<br>
+    <b>下层 (DQN)</b> — 选股：在 ETF 池中独立决策每支的买入/持有/卖出，受 PPO 仓位约束<br><br>
+    🚀 训练在后台执行（最多 3 个并发），提交后可到「📋 训练任务」查看进度
+    </div>
+    """, unsafe_allow_html=True)
 
-    st.sidebar.markdown(t("hrl.sidebar.header"))
+    st.sidebar.markdown("### 🧠 分层强化学习参数")
 
     all_registered_etfs = SymbolRegistry.list(asset_type="etf")
     if not all_registered_etfs:
-        st.error(t("hrl.error.no_etfs"))
+        st.error("尚未添加任何 ETF 代码。请先在「📋 代码管理」中添加。")
         st.stop()
 
     filtered_etfs = all_registered_etfs
 
     selected_symbols = []
-    with st.sidebar.expander(t("hrl.sidebar.etf_pool"), expanded=True):
-        all_on = st.checkbox(t("hrl.sidebar.select_all"), value=True, key="hrl_select_all")
+    with st.sidebar.expander("📋 ETF 池选择", expanded=True):
+        all_on = st.checkbox("全选", value=True, key="hrl_select_all")
         for s in filtered_etfs:
             sym = s["symbol"]
             label = s["name"]
@@ -147,7 +153,7 @@ def render_hierarchical_rl(end_date, adjust):
                 selected_symbols.append(sym)
 
     if not selected_symbols:
-        st.error(t("hrl.error.select_etf"))
+        st.error("请至少选择一支 ETF")
         st.stop()
 
     rl_end_str = end_date.strftime("%Y%m%d")
@@ -160,11 +166,11 @@ def render_hierarchical_rl(end_date, adjust):
                 etf_data[sym] = df
 
     if len(etf_data) < 2:
-        st.error(t("hrl.error.fetch_failed", n=len(etf_data)))
+        st.error(f"数据获取失败，成功获取 {len(etf_data)} 支，需要至少 2 支 ETF")
         st.stop()
 
     aligned_dates = _align_dates(etf_data)
-    st.success(t("hrl.success.data_ready", n=len(etf_data), days=len(aligned_dates)))
+    st.success(f"成功获取 {len(etf_data)} 支 ETF 数据，对齐后共 {len(aligned_dates)} 个交易日")
     st.caption(f"ETF: {', '.join(f'{s}({_etf_name(s)})' for s in sorted(etf_data.keys()))}")
     st.caption(f"日期范围: {aligned_dates[0][:10]} ~ {aligned_dates[-1][:10]}")
 
@@ -181,43 +187,42 @@ def render_hierarchical_rl(end_date, adjust):
     test_start = aligned_dates[min(val_end_i + 1, n_total - 1)][:10]
     test_end = aligned_dates[-1][:10]
 
-    st.info(t("hrl.info.data_split",
-              s=train_start, e=train_end, n=train_end_i + 1,
-              vs=val_start, ve=val_end, vn=val_end_i - train_end_i,
-              ts=test_start, te=test_end, tn=n_total - val_end_i - 1))
+    st.info(f"训练集: {train_start} ~ {train_end} ({train_end_i+1} 天) | "
+            f"验证集: {val_start} ~ {val_end} ({val_end_i - train_end_i} 天) | "
+            f"测试集: {test_start} ~ {test_end} ({n_total - val_end_i - 1} 天)")
 
-    with st.sidebar.expander(t("hrl.sidebar.fee"), expanded=False):
-        hrl_commission = st.number_input(t("hrl.sidebar.commission"), min_value=0.0, value=0.000235, step=0.000005, format="%.6f", key="hrl_commission")
-        hrl_min_commission = st.number_input(t("hrl.sidebar.min_commission"), min_value=0.0, value=5.0, step=1.0, key="hrl_min_comm")
-        hrl_stamp_duty = st.number_input(t("hrl.sidebar.stamp"), min_value=0.0, value=0.001, step=0.0001, format="%.4f", key="hrl_stamp")
-        hrl_capital = st.number_input(t("hrl.sidebar.initial_capital"), min_value=1000.0, value=100000.0, step=10000.0, key="hrl_capital_input")
+    with st.sidebar.expander("💰 费率设置", expanded=False):
+        hrl_commission = st.number_input("佣金费率", min_value=0.0, value=0.000235, step=0.000005, format="%.6f", key="hrl_commission")
+        hrl_min_commission = st.number_input("最低佣金(元)", min_value=0.0, value=5.0, step=1.0, key="hrl_min_comm")
+        hrl_stamp_duty = st.number_input("印花税率", min_value=0.0, value=0.001, step=0.0001, format="%.4f", key="hrl_stamp")
+        hrl_capital = st.number_input("初始本金(元)", min_value=1000.0, value=100000.0, step=10000.0, key="hrl_capital_input")
 
-    with st.sidebar.expander(t("hrl.sidebar.ppo_params"), expanded=False):
-        ppo_lr = st.text_input(t("hrl.sidebar.ppo_lr"), value="3e-4", key="hrl_ppo_lr")
-        ppo_gamma = st.text_input(t("hrl.sidebar.ppo_gamma"), value="0.99", key="hrl_ppo_gamma")
-        ppo_clip = st.text_input(t("hrl.sidebar.ppo_clip"), value="0.2", key="hrl_ppo_clip")
-        ppo_entropy = st.text_input(t("hrl.sidebar.ppo_entropy"), value="0.01", key="hrl_ppo_entropy")
-        ppo_epochs = st.number_input(t("hrl.sidebar.ppo_epochs"), min_value=1, value=4, key="hrl_ppo_epochs")
-        ppo_hidden = st.number_input(t("hrl.sidebar.ppo_hidden"), min_value=32, value=64, step=16, key="hrl_ppo_hidden")
-        gae_lambda = st.text_input(t("hrl.sidebar.ppo_gae"), value="0.95", key="hrl_gae_lambda")
+    with st.sidebar.expander("⚙️ PPO 超参数", expanded=False):
+        ppo_lr = st.text_input("PPO 学习率", value="3e-4", key="hrl_ppo_lr")
+        ppo_gamma = st.text_input("PPO γ", value="0.99", key="hrl_ppo_gamma")
+        ppo_clip = st.text_input("PPO Clip ε", value="0.2", key="hrl_ppo_clip")
+        ppo_entropy = st.text_input("熵奖励 β", value="0.01", key="hrl_ppo_entropy")
+        ppo_epochs = st.number_input("PPO Epochs", min_value=1, value=4, key="hrl_ppo_epochs")
+        ppo_hidden = st.number_input("PPO 隐藏层", min_value=32, value=64, step=16, key="hrl_ppo_hidden")
+        gae_lambda = st.text_input("GAE λ", value="0.95", key="hrl_gae_lambda")
 
-    with st.sidebar.expander(t("hrl.sidebar.dqn_params"), expanded=False):
-        dqn_lr = st.text_input(t("hrl.sidebar.dqn_lr"), value="1e-5", key="hrl_dqn_lr")
-        dqn_gamma = st.text_input(t("hrl.sidebar.dqn_gamma"), value="0.98", key="hrl_dqn_gamma")
-        dqn_hidden = st.number_input(t("hrl.sidebar.dqn_hidden"), min_value=32, value=128, step=32, key="hrl_dqn_hidden")
-        dqn_epsilon_start = st.text_input(t("hrl.sidebar.dqn_epsilon_start"), value="0.9", key="hrl_dqn_eps_start")
-        dqn_epsilon_end = st.text_input(t("hrl.sidebar.dqn_epsilon_end"), value="0.01", key="hrl_dqn_eps_end")
-        dqn_epsilon_decay = st.number_input(t("hrl.sidebar.dqn_epsilon_decay"), min_value=100, value=500, step=100, key="hrl_dqn_eps_decay")
-        dqn_buffer = st.number_input(t("hrl.sidebar.dqn_replay"), min_value=1000, value=10000, step=1000, key="hrl_dqn_buffer")
-        dqn_batch = st.number_input(t("hrl.sidebar.dqn_batch"), min_value=32, value=200, step=32, key="hrl_dqn_batch")
+    with st.sidebar.expander("⚙️ DQN 超参数", expanded=False):
+        dqn_lr = st.text_input("DQN 学习率", value="1e-5", key="hrl_dqn_lr")
+        dqn_gamma = st.text_input("DQN γ", value="0.98", key="hrl_dqn_gamma")
+        dqn_hidden = st.number_input("DQN 隐藏层", min_value=32, value=128, step=32, key="hrl_dqn_hidden")
+        dqn_epsilon_start = st.text_input("ε 初始值", value="0.9", key="hrl_dqn_eps_start")
+        dqn_epsilon_end = st.text_input("ε 终值", value="0.01", key="hrl_dqn_eps_end")
+        dqn_epsilon_decay = st.number_input("ε 衰减步数", min_value=100, value=500, step=100, key="hrl_dqn_eps_decay")
+        dqn_buffer = st.number_input("回放容量", min_value=1000, value=10000, step=1000, key="hrl_dqn_buffer")
+        dqn_batch = st.number_input("Batch 大小", min_value=32, value=200, step=32, key="hrl_dqn_batch")
 
-    with st.sidebar.expander(t("hrl.sidebar.train_params"), expanded=False):
-        n_episodes = st.number_input(t("hrl.sidebar.episodes"), min_value=5, value=32, step=5, key="hrl_n_episodes")
-        ppo_update_freq = st.number_input(t("hrl.sidebar.ppo_update_freq"), min_value=5, value=20, step=5, key="hrl_ppo_update_freq")
-        trade_fraction = st.text_input(t("hrl.sidebar.trade_ratio"), value="0.2", key="hrl_trade_fraction",
-                                       help=t("hrl.sidebar.trade_ratio.help"))
+    with st.sidebar.expander("⚙️ 训练参数", expanded=False):
+        n_episodes = st.number_input("训练轮数", min_value=5, value=32, step=5, key="hrl_n_episodes")
+        ppo_update_freq = st.number_input("PPO 更新频率(步)", min_value=5, value=20, step=5, key="hrl_ppo_update_freq")
+        trade_fraction = st.text_input("每笔交易比例", value="0.2", key="hrl_trade_fraction",
+                                       help="单支ETF每次最多交易占总资金的比例")
 
-    run_btn = st.sidebar.button(t("hrl.sidebar.btn.train"), type="primary", key="hrl_run_btn")
+    run_btn = st.sidebar.button("🚀 后台训练", type="primary", key="hrl_run_btn")
 
     # ── Parse hyperparams ──
     try:
@@ -232,7 +237,7 @@ def render_hierarchical_rl(end_date, adjust):
         dqn_epsilon_start_f = float(dqn_epsilon_start)
         dqn_epsilon_end_f = float(dqn_epsilon_end)
     except ValueError:
-        st.error(t("hrl.error.hp_format"))
+        st.error("超参数格式错误")
         st.stop()
 
     total_dates = aligned_dates
@@ -275,7 +280,7 @@ def render_hierarchical_rl(end_date, adjust):
 
         mgr = TaskManager()
         task_id = mgr.submit("HRL训练", params, _hrl_train_task, args=(params,))
-        st.success(t("hrl.success.train_submitted", id=task_id[:8]))
+        st.success(f"✅ 训练任务已提交 (ID: {task_id[:8]}...) 可到「📋 训练任务」查看进度")
 
     # ── Load result from completed task ──
     loaded_task_id = st.session_state.get("hrl_loaded_task_id")
@@ -295,56 +300,50 @@ def render_hierarchical_rl(end_date, adjust):
     test_result = st.session_state.hrl_test_result
     capital = st.session_state.hrl_capital or 100000.0
 
-    _c_strat = t("hrl.col.strategy")
-    _c_final = t("hrl.col.final_amount")
-    _c_return = t("hrl.col.return")
-    _c_sharpe = t("hrl.col.sharpe")
-    _c_drawdown = t("hrl.col.max_drawdown")
-
     if test_result is not None:
         st.markdown("---")
-        st.subheader(t("hrl.result.title"))
+        st.subheader("📊 分层 RL 回测结果")
 
         benchmarks = st.session_state.hrl_benchmarks
 
-        st.markdown(t("hrl.result.header"))
+        st.markdown("#### 📋 测试集策略指标")
         rows = [{
-            _c_strat: t("hrl.result.strategy.hrl"),
-            _c_final: test_result["final_value"],
-            _c_return: test_result["total_return_pct"],
-            _c_sharpe: test_result["sharpe_ratio"],
-            _c_drawdown: test_result["max_drawdown_pct"],
+            "策略": "HRL (PPO择时 + DQN选股)",
+            "最终金额": test_result["final_value"],
+            "收益率%": test_result["total_return_pct"],
+            "夏普比率": test_result["sharpe_ratio"],
+            "最大回撤%": test_result["max_drawdown_pct"],
         }]
         if benchmarks:
             ew = benchmarks.get("equal_weight_bh")
             if ew:
                 rows.append({
-                    _c_strat: t("hrl.result.strategy.equal_weight"),
-                    _c_final: ew["final_value"],
-                    _c_return: ew["total_return_pct"],
-                    _c_sharpe: ew["sharpe_ratio"],
-                    _c_drawdown: ew["max_drawdown_pct"],
+                    "策略": "等权买入持有",
+                    "最终金额": ew["final_value"],
+                    "收益率%": ew["total_return_pct"],
+                    "夏普比率": ew["sharpe_ratio"],
+                    "最大回撤%": ew["max_drawdown_pct"],
                 })
-            for dca_key, dca_label in [("monthly_dca", t("hrl.result.strategy.monthly_dca")), ("ma_adjust_dca", t("hrl.result.strategy.ma_dca"))]:
+            for dca_key, dca_label in [("monthly_dca", "月定投(等权)"), ("ma_adjust_dca", "均线偏离定投(等权)")]:
                 dca = benchmarks.get(dca_key)
                 if dca:
                     rows.append({
-                        _c_strat: dca_label,
-                        _c_final: dca["final_value"],
-                        _c_return: dca["total_return_pct"],
-                        _c_sharpe: dca.get("sharpe_ratio", "N/A"),
-                        _c_drawdown: dca.get("max_drawdown_pct", "N/A"),
+                        "策略": dca_label,
+                        "最终金额": dca["final_value"],
+                        "收益率%": dca["total_return_pct"],
+                        "夏普比率": dca.get("sharpe_ratio", "N/A"),
+                        "最大回撤%": dca.get("max_drawdown_pct", "N/A"),
                     })
         comp = pd.DataFrame(rows)
         st.dataframe(comp, width='stretch', hide_index=True)
 
         if test_result.get("equity_curve") is not None:
-            st.markdown(t("hrl.result.nav_chart"))
+            st.markdown("#### 📈 累计净值曲线")
 
             single_bh = (benchmarks or {}).get("single_etf_bh", {})
             if single_bh:
                 selected_syms = st.multiselect(
-                    t("hrl.result.show_single_etf"),
+                    "显示单只ETF全仓持有对比",
                     options=list(single_bh.keys()),
                     default=[],
                     key="hrl_bh_selector",
@@ -359,7 +358,7 @@ def render_hierarchical_rl(end_date, adjust):
                 mode="lines", name="HRL",
                 line=dict(color="#2563eb", width=2),
             ))
-            fig.add_hline(y=float(capital), line_dash="dot", line_color="gray", annotation_text=t("hrl.chart.initial_capital"))
+            fig.add_hline(y=float(capital), line_dash="dot", line_color="gray", annotation_text="初始本金")
 
             if benchmarks:
                 ew = benchmarks.get("equal_weight_bh")
@@ -367,12 +366,12 @@ def render_hierarchical_rl(end_date, adjust):
                     fig.add_trace(go.Scatter(
                         x=test_result["dates"],
                         y=ew["equity_curve"],
-                        mode="lines", name=t("hrl.result.strategy.equal_weight"),
+                        mode="lines", name="等权买入持有",
                         line=dict(color="#ef4444", width=2, dash="dash"),
                     ))
                 for dca_key, dca_label, dca_color in [
-                    ("monthly_dca", t("hrl.result.strategy.monthly_dca"), "#10b981"),
-                    ("ma_adjust_dca", t("hrl.result.strategy.ma_dca"), "#f59e0b"),
+                    ("monthly_dca", "月定投(等权)", "#10b981"),
+                    ("ma_adjust_dca", "均线偏离定投(等权)", "#f59e0b"),
                 ]:
                     dca = benchmarks.get(dca_key)
                     if dca is not None and "total_value_series" in dca:
@@ -404,7 +403,7 @@ def render_hierarchical_rl(end_date, adjust):
             )
             st.plotly_chart(fig, width='stretch')
 
-            st.markdown(t("hrl.result.position_chart"))
+            st.markdown("#### 📊 仓位比例时序 (PPO 决策)")
             fig2 = go.Figure()
             fig2.add_trace(go.Scatter(
                 x=test_result["dates"],
@@ -413,7 +412,7 @@ def render_hierarchical_rl(end_date, adjust):
                 line=dict(color="#2563eb", width=2),
                 fill="tozeroy",
             ))
-            fig2.add_hline(y=0.5, line_dash="dash", line_color="gray", annotation_text=t("hrl.chart.half_position"))
+            fig2.add_hline(y=0.5, line_dash="dash", line_color="gray", annotation_text="半仓")
             fig2.update_layout(
                 xaxis_title="日期", yaxis_title="仓位比例",
                 hovermode="x unified", height=250,
@@ -422,23 +421,23 @@ def render_hierarchical_rl(end_date, adjust):
             st.plotly_chart(fig2, width='stretch')
 
         if "trade_log" in test_result and not test_result["trade_log"].empty:
-            with st.expander(t("hrl.result.trade_log"), expanded=False):
+            with st.expander("📝 交易记录", expanded=False):
                 st.dataframe(test_result["trade_log"], width='stretch', hide_index=True)
                 if "trade_events" in test_result and not test_result["trade_events"].empty:
-                    st.caption(t("hrl.result.trade_log.desc"))
+                    st.caption("交易事件（仅操作变化日）:")
                     st.dataframe(test_result["trade_events"], width='stretch', hide_index=True)
 
         st.markdown("---")
-        st.markdown(t("hrl.save.header"))
+        st.markdown("#### 💾 保存模型")
         _save_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         _save_default = f"hrl_{_save_ts}"
-        _save_name = st.text_input(t("hrl.save.model_name"), value=_save_default, key="hrl_save_name")
-        if st.button(t("hrl.save.btn"), type="primary", key="hrl_save_btn"):
+        _save_name = st.text_input("模型名称", value=_save_default, key="hrl_save_name")
+        if st.button("💾 保存 HRL 模型", type="primary", key="hrl_save_btn"):
             trainer = st.session_state.get("hrl_trainer")
             if trainer:
                 save_path = f"saved_models/rl/{_save_name}"
                 trainer.save(save_path)
-                st.success(t("hrl.save.success", path=save_path))
+                st.success(f"✅ 模型已保存: {save_path}")
     else:
         if not run_btn:
-            st.info(t("hrl.info.waiting"))
+            st.info("👈 在侧边栏设置好参数后，点击「后台训练」")

@@ -2,54 +2,44 @@ import streamlit as st
 import pandas as pd
 
 from data.symbol_registry import SymbolRegistry
-from data.asset_config import ASSET_TYPE_CONFIG
-from utils.i18n import t, tt
 
 
 def render_symbol_manager():
-    st.title(t("symbol.title"))
-    st.markdown(t("symbol.desc"), unsafe_allow_html=True)
+    st.title("📋 代码管理")
+    st.markdown("""
+    <div style="background:#f0f4ff;border-radius:10px;padding:1rem 1.25rem;margin-bottom:1.5rem;font-size:0.9rem;color:#1e293b">
+    统一管理所有交易标的代码。添加后的代码可在强化学习中以勾选方式选择使用。<br>
+    数据优先使用本地缓存 (<code>cache/</code>)，仅当日期范围超出缓存覆盖时才重新下载。
+    </div>
+    """, unsafe_allow_html=True)
 
     all_tags = set()
     for s in SymbolRegistry.list():
-        for tag in s.get("tags", []):
-            all_tags.add(tag)
+        for t in s.get("tags", []):
+            all_tags.add(t)
     all_tags = sorted(all_tags)
 
-    def _asset_label(x):
-        if x == "__all":
-            return t("status.all")
-        cfg = ASSET_TYPE_CONFIG[x]
-        if st.session_state.get("_lang", "zh") == "en":
-            return cfg.get("label_en", cfg["label"])
-        return cfg["label"]
+    filter_type = st.selectbox("资产类型过滤", ["全部", "stock", "etf", "lof", "open_fund", "index", "us"])
+    filter_tag = st.selectbox("标签过滤", ["全部"] + all_tags)
 
-    FILTER_TYPES = ["__all", "stock", "etf", "lof", "open_fund", "index", "us"]
-    filter_type = st.selectbox(t("symbol.filter_type"), FILTER_TYPES, format_func=_asset_label)
-    filter_tag = st.selectbox(
-        t("symbol.filter_tag"),
-        ["__all"] + all_tags,
-        format_func=lambda x: t("status.all") if x == "__all" else x,
-    )
-
-    st.markdown(t("symbol.add_header"))
+    st.markdown("#### ➕ 添加新代码")
     with st.container(border=True):
         ai1, ai2, ai3, ai4 = st.columns([1.5, 1, 2, 1])
         with ai1:
-            new_symbol = st.text_input(t("sidebar.symbol_code"), placeholder=t("symbol.code_placeholder"), key="add_symbol")
+            new_symbol = st.text_input("代码", placeholder="如 510300", key="add_symbol")
         with ai2:
-            new_asset_type = st.selectbox(t("symbol.add_type"), ["etf", "stock", "lof", "open_fund", "index", "us"], key="add_type")
+            new_asset_type = st.selectbox("资产类型", ["etf", "stock", "lof", "open_fund", "index", "us"], key="add_type")
         with ai3:
-            new_tags_str = st.text_input(t("symbol.add_tags"), placeholder=t("symbol.tags_placeholder"), key="add_tags")
+            new_tags_str = st.text_input("标签 (逗号分隔)", placeholder="宽基ETF, 科技", key="add_tags")
         with ai4:
             st.markdown("")
             st.markdown("")
-            if st.button(t("symbol.add_btn"), type="primary", use_container_width=True, key="add_confirm"):
+            if st.button("➕ 添加", type="primary", use_container_width=True, key="add_confirm"):
                 if not new_symbol.strip():
-                    st.error(t("symbol.error.no_code"))
+                    st.error("请输入代码")
                 else:
-                    tags = [tag.strip() for tag in new_tags_str.split(",") if tag.strip()]
-                    with st.spinner(t("symbol.spinner.fetching", symbol=new_symbol.strip())):
+                    tags = [t.strip() for t in new_tags_str.split(",") if t.strip()]
+                    with st.spinner(f"正在获取 {new_symbol.strip()} 信息..."):
                         try:
                             meta = SymbolRegistry.autofetch_meta(new_symbol.strip(), new_asset_type)
                         except ValueError as e:
@@ -63,26 +53,26 @@ def render_symbol_manager():
                         tags=tags,
                     )
                     if ok:
-                        st.success(t("symbol.success.added", sym=new_symbol, name=meta["name"], date=meta["start_date"]))
+                        st.success(f"已添加 {new_symbol} — {meta['name']}（数据自 {meta['start_date']}）")
                         st.rerun()
                     else:
-                        st.error(t("symbol.error.exists", sym=new_symbol))
+                        st.error(f"代码 {new_symbol} 已存在")
 
     symbols = SymbolRegistry.list()
-    if filter_type != "__all":
+    if filter_type != "全部":
         symbols = [s for s in symbols if s["asset_type"] == filter_type]
-    if filter_tag != "__all":
+    if filter_tag != "全部":
         symbols = [s for s in symbols if filter_tag in s.get("tags", [])]
 
-    st.markdown(t("symbol.list_header"))
+    st.markdown("#### 已注册代码")
     cols_header = st.columns([0.5, 2.5, 1, 1.2, 1.2, 1.8, 0.8])
-    cols_header[0].checkbox(t("symbol.col.select"), key="sel_all", label_visibility="collapsed")
-    cols_header[1].markdown(t("symbol.col.code_name"))
-    cols_header[2].markdown(t("symbol.col.type"))
-    cols_header[3].markdown(t("symbol.col.start"))
-    cols_header[4].markdown(t("symbol.col.status"))
-    cols_header[5].markdown(t("symbol.col.tags"))
-    cols_header[6].markdown(t("symbol.col.actions"))
+    cols_header[0].checkbox("选", key="sel_all", label_visibility="collapsed")
+    cols_header[1].markdown("**代码 / 名称**")
+    cols_header[2].markdown("**类型**")
+    cols_header[3].markdown("**开始日期**")
+    cols_header[4].markdown("**数据状态**")
+    cols_header[5].markdown("**标签**")
+    cols_header[6].markdown("**操作**")
 
     selected = []
     for s in symbols:
@@ -104,65 +94,65 @@ def render_symbol_manager():
 
             with cols[6]:
                 with st.popover("⚙", use_container_width=True):
-                    with st.expander(t("symbol.edit"), expanded=True):
-                        new_name = st.text_input(t("symbol.edit.name"), value=s["name"], key=f"ed_name_{s['symbol']}")
-                        new_notes = st.text_area(t("symbol.edit.notes"), value=s.get("notes", ""), key=f"ed_notes_{s['symbol']}")
+                    with st.expander("✏️ 编辑", expanded=True):
+                        new_name = st.text_input("名称", value=s["name"], key=f"ed_name_{s['symbol']}")
+                        new_notes = st.text_area("备注", value=s.get("notes", ""), key=f"ed_notes_{s['symbol']}")
                         new_tags_str = st.text_input(
-                            t("symbol.edit.tags"),
+                            "标签 (逗号分隔)",
                             value=", ".join(s.get("tags", [])),
                             key=f"ed_tags_{s['symbol']}",
                         )
-                        if st.button(t("symbol.edit.save"), key=f"ed_save_{s['symbol']}"):
-                            new_tags = [tag.strip() for tag in new_tags_str.split(",") if tag.strip()]
+                        if st.button("保存修改", key=f"ed_save_{s['symbol']}"):
+                            new_tags = [t.strip() for t in new_tags_str.split(",") if t.strip()]
                             SymbolRegistry.update(
                                 s["symbol"],
                                 name=new_name,
                                 notes=new_notes,
                                 tags=new_tags,
                             )
-                            st.success(t("symbol.success.updated"))
+                            st.success("已更新")
                             st.rerun()
 
-                    if st.button(t("symbol.edit.delete"), type="secondary", key=f"del_{s['symbol']}"):
+                    if st.button("🗑 删除", type="secondary", key=f"del_{s['symbol']}"):
                         SymbolRegistry.remove(s["symbol"])
-                        st.success(t("symbol.success.deleted", sym=s["symbol"]))
+                        st.success(f"已删除 {s['symbol']}")
                         st.rerun()
 
                     st.markdown("---")
-                    st.caption(t("symbol.edit.sync"))
-                    if st.button(t("symbol.edit.sync_btn"), key=f"sync_{s['symbol']}"):
-                        with st.spinner(t("symbol.spinner.fetching", symbol=s["symbol"])):
+                    st.caption("同步数据")
+                    if st.button("🔄 立即同步", key=f"sync_{s['symbol']}"):
+                        with st.spinner(f"正在获取 {s['symbol']} 数据..."):
                             df = SymbolRegistry.fetch_data(s["symbol"])
                         if df is not None and not df.empty:
-                            st.success(t("symbol.sync.complete", n=len(df),
-                                         start=str(df.index[0])[:10], end=str(df.index[-1])[:10]))
+                            st.success(f"同步完成: {len(df)} 行, "
+                                       f"{str(df.index[0])[:10]} ~ {str(df.index[-1])[:10]}")
                             st.rerun()
                         else:
-                            st.error(t("symbol.error.sync_failed"))
+                            st.error("同步失败")
 
     if selected:
         n = len(selected)
         st.markdown("---")
         bar = st.columns([2, 1, 5])
-        bar[0].markdown(t("symbol.selected_count", n=n))
+        bar[0].markdown(f"已选 {n} 个代码")
         with bar[1]:
-            with st.popover(tt("🗑 批量删除", "🗑 Batch Delete"), use_container_width=True):
-                st.warning(t("symbol.batch_delete.warning", n=n))
+            with st.popover("🗑 批量删除", use_container_width=True):
+                st.warning(f"确定要删除以下 {n} 个代码吗？此操作不可撤销。")
                 for sym in selected:
                     entry = SymbolRegistry.get(sym)
                     label = entry["name"] if entry else sym
                     st.markdown(f"- **{sym}** {label}")
-                if st.button(t("symbol.batch_delete.confirm"), type="primary", key="batch_del_confirm"):
+                if st.button("确认删除", type="primary", key="batch_del_confirm"):
                     for sym in selected:
                         SymbolRegistry.remove(sym)
-                    st.success(t("symbol.batch_delete.success", n=n))
+                    st.success(f"已删除 {n} 个代码")
                     st.rerun()
 
     mirror = SymbolRegistry.list()
     type_counts = {}
     for s in mirror:
-        at = s["asset_type"]
-        type_counts[at] = type_counts.get(at, 0) + 1
-    dist_str = ", ".join(f"{at}:{c}" for at, c in sorted(type_counts.items()))
+        t = s["asset_type"]
+        type_counts[t] = type_counts.get(t, 0) + 1
+    dist_str = ", ".join(f"{t}:{c}" for t, c in sorted(type_counts.items()))
     st.markdown("---")
-    st.caption(t("symbol.footer", n=len(mirror), dist=dist_str))
+    st.caption(f"注册表共 {len(mirror)} 个代码 | 类型分布: {dist_str}")

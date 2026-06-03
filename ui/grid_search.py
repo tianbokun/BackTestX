@@ -13,15 +13,17 @@ from backtest.grid_search import (
     run_grid_search, save_result, list_saved_results, load_result,
 )
 from ui._helpers import COLORS
-from utils.i18n import t, tt
 
 
 def render_grid_search(price_series, start_date, end_date, symbol):
-    st.title(t("grid.title"))
-    st.markdown(t("grid.desc"))
+    st.title("🎯 网格搜索 — 下跌加仓策略")
+    st.markdown(
+        "对**下跌加仓策略**（前一日跌幅超过 X% 时买入 Y 元）进行超参数网格搜索，"
+        "使用 Walk-Forward 交叉验证评估。"
+    )
 
     # 策略清单 (可折叠)
-    with st.expander(t("grid.strategy_catalog")):
+    with st.expander("📚 常见智能定投策略一览"):
         for i, s in enumerate(STRATEGY_CATALOG, 1):
             st.markdown(f"**{i}. [{s['category']}] {s['name']}**")
             st.markdown(f"{s['description']}")
@@ -36,30 +38,32 @@ def render_grid_search(price_series, start_date, end_date, symbol):
 
     # ═══════════════ 策略全能对比 ═══════════════
 
-    st.subheader(t("grid.compare_all"))
-    st.markdown(t("grid.compare_all.desc"))
+    st.subheader("🥊 策略全能对比")
+    st.markdown(
+        "一次性对比所有定投频率 + 下跌加仓策略 + 一次性投入的收益率表现。"
+    )
 
     compare_max_total = st.number_input(
-        t("grid.param.max_invest"), min_value=0, value=0, step=50000,
+        "总投资上限 (元, 0=不限)", min_value=0, value=0, step=50000,
         key="compare_max_total",
-        help=t("grid.param.max_invest.help"),
+        help="所有策略共享此总投资上限; 0 表示不设限",
     )
-    compare_X = st.number_input(t("grid.param.drop_threshold"), min_value=0.1, value=1.0, step=0.1,
+    compare_X = st.number_input("下跌加仓: 跌幅阈值 X (%)", min_value=0.1, value=1.0, step=0.1,
                                 key="compare_x")
-    compare_Y = st.number_input(t("grid.param.drop_amount"), min_value=100, value=5000, step=100,
+    compare_Y = st.number_input("下跌加仓: 每期买入 Y (元)", min_value=100, value=5000, step=100,
                                 key="compare_y")
     compare_dca_amount = st.number_input(
-        t("grid.param.daily_amount"), min_value=10, value=100, step=10,
+        "日均定投金额 (元)", min_value=10, value=100, step=10,
         key="compare_dca_amount",
-        help=t("grid.param.daily_amount.help"),
+        help="实际每期投入 = 日均金额 × 对应频率的交易日乘数",
     )
 
-    with st.expander(t("grid.fee.header"), expanded=False):
-        gs_commission = st.number_input(t("dca.fee.commission"), min_value=0.0, value=0.00025, step=0.00005, format="%.5f", key="gs_commission")
-        gs_min_commission = st.number_input(t("dca.fee.min_commission"), min_value=0.0, value=5.0, step=1.0, key="gs_min_comm")
-        gs_stamp_duty = st.number_input(t("dca.fee.stamp"), min_value=0.0, value=0.001, step=0.0001, format="%.4f", key="gs_stamp")
+    with st.expander("💰 费率设置", expanded=False):
+        gs_commission = st.number_input("佣金费率", min_value=0.0, value=0.00025, step=0.00005, format="%.5f", key="gs_commission")
+        gs_min_commission = st.number_input("最低佣金(元)", min_value=0.0, value=5.0, step=1.0, key="gs_min_comm")
+        gs_stamp_duty = st.number_input("印花税率", min_value=0.0, value=0.001, step=0.0001, format="%.4f", key="gs_stamp")
 
-    run_compare = st.button(t("grid.btn.run_all"), type="primary", width='stretch',
+    run_compare = st.button("🏁 运行全能对比", type="primary", width='stretch',
                             key="run_compare")
 
     if run_compare:
@@ -69,7 +73,7 @@ def render_grid_search(price_series, start_date, end_date, symbol):
         com, mcom, sd = float(gs_commission), float(gs_min_commission), float(gs_stamp_duty)
         results = {}
 
-        with st.spinner(t("grid.spinner.compare")):
+        with st.spinner("正在运行所有策略对比..."):
             dca_amt = float(compare_dca_amount)
 
             # 1. DCA 各频率
@@ -147,56 +151,47 @@ def render_grid_search(price_series, start_date, end_date, symbol):
                     results["一次性投入"] = lump
 
         if not results:
-            st.warning(t("grid.warning.no_trades"))
+            st.warning("所有策略均无有效交易, 请调整参数")
         else:
             # ── 对比表 ──
-            st.subheader(t("grid.title.return_compare"))
+            st.subheader("🎯 收益率对比")
             has_gs_fees = "total_commissions" in next(iter(results.values()), {})
-
-            col_strategy = t("dca.col.strategy")
-            col_total_invest = t("dca.col.total_invest")
-            col_final_value = t("dca.col.final_value")
-            col_total_return = t("dca.col.total_return")
-            col_annual_return = t("dca.col.annual_return")
-            col_invest_count = t("dca.col.invest_count")
-            col_trade_fee = t("dca.col.trade_fee")
-
             comp_data = []
             for name, r in results.items():
                 entry = {
-                    col_strategy: name, col_total_invest: r["total_invested"],
-                    col_final_value: r["final_value"], col_total_return: r["total_return_pct"],
-                    col_annual_return: r["annualized_return_pct"],
-                    col_invest_count: r["num_investments"],
+                    "策略": name, "总投入": r["total_invested"],
+                    "终值": r["final_value"], "总收益率%": r["total_return_pct"],
+                    "年化收益率%": r["annualized_return_pct"],
+                    "定投次数": r["num_investments"],
                 }
                 if has_gs_fees:
-                    entry[col_trade_fee] = r.get("total_commissions", 0)
+                    entry["交易费用"] = r.get("total_commissions", 0)
                 comp_data.append(entry)
             comp_df = pd.DataFrame(comp_data)
 
             def _hlight(val, col):
-                if col in (col_total_return, col_annual_return):
+                if col in ("总收益率%", "年化收益率%"):
                     best = comp_df[col].max()
                     return "background-color: #2ca02c33" if val == best else ""
                 return ""
 
-            gs_cols_to_hlight = [col_total_return, col_annual_return]
+            gs_cols_to_hlight = ["总收益率%", "年化收益率%"]
             gs_blank = len(comp_df.columns) - len(gs_cols_to_hlight)
             st.dataframe(
                 comp_df.style.apply(lambda row: [
-                    _hlight(row[col_total_return], col_total_return),
-                    _hlight(row[col_annual_return], col_annual_return),
+                    _hlight(row["总收益率%"], "总收益率%"),
+                    _hlight(row["年化收益率%"], "年化收益率%"),
                     *([""] * gs_blank),
                 ], axis=1).format({
-                    col_total_invest: "{:,.2f}", col_final_value: "{:,.2f}",
-                    col_total_return: "{:+.2f}%", col_annual_return: "{:+.2f}%",
-                    col_trade_fee: "{:,.2f}",
+                    "总投入": "{:,.2f}", "终值": "{:,.2f}",
+                    "总收益率%": "{:+.2f}%", "年化收益率%": "{:+.2f}%",
+                    "交易费用": "{:,.2f}",
                 }),
                 width='stretch', hide_index=True,
             )
 
             # ── 市值对比 ──
-            st.subheader(t("grid.title.position_compare"))
+            st.subheader("📊 持仓市值对比")
             fig_c = go.Figure()
             for i, (name, r) in enumerate(results.items()):
                 c = COLORS[i % len(COLORS)]
@@ -207,14 +202,14 @@ def render_grid_search(price_series, start_date, end_date, symbol):
                               dash="dash" if name == "一次性投入" else "solid"),
                 ))
             fig_c.update_layout(
-                xaxis_title=t("dca.axis.date"), yaxis_title=t("dca.axis.position"),
+                xaxis_title="日期", yaxis_title="持仓市值 (元)",
                 hovermode="x unified", margin=dict(l=10, r=10, t=10, b=10), height=450,
                 legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
             )
             st.plotly_chart(fig_c, width='stretch')
 
             # ── 累计投入对比 ──
-            st.subheader(t("grid.title.invest_compare"))
+            st.subheader("💰 累计投入对比")
             fig_inv = go.Figure()
             for i, (name, r) in enumerate(results.items()):
                 c = COLORS[i % len(COLORS)]
@@ -223,14 +218,14 @@ def render_grid_search(price_series, start_date, end_date, symbol):
                     mode="lines", name=name, line=dict(color=c, width=2, dash="dot"),
                 ))
             fig_inv.update_layout(
-                xaxis_title=t("dca.axis.date"), yaxis_title=t("dca.axis.invest"),
+                xaxis_title="日期", yaxis_title="累计投入 (元)",
                 hovermode="x unified", margin=dict(l=10, r=10, t=10, b=10), height=350,
                 legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
             )
             st.plotly_chart(fig_inv, width='stretch')
 
             # ── 收益率走势 ──
-            st.subheader(t("grid.title.return_trend"))
+            st.subheader("📈 收益率走势对比")
             fig_ret = go.Figure()
             for i, (name, r) in enumerate(results.items()):
                 ret_s = ((r["portfolio_series"] - r["invested_series"]) / r["invested_series"] * 100)
@@ -240,27 +235,27 @@ def render_grid_search(price_series, start_date, end_date, symbol):
                     x=ret_s.index, y=ret_s.values, mode="lines", name=name,
                     line=dict(color=c, width=2),
                 ))
-            fig_ret.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text=t("dca.chart.zero_line"))
+            fig_ret.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="盈亏线")
             fig_ret.update_layout(
-                xaxis_title=t("dca.axis.date"), yaxis_title=t("dca.axis.return"),
+                xaxis_title="日期", yaxis_title="收益率 (%)",
                 hovermode="x unified", margin=dict(l=10, r=10, t=10, b=10), height=350,
                 legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
             )
             st.plotly_chart(fig_ret, width='stretch')
 
             # ── 明细 ──
-            st.subheader(t("grid.title.detail"))
+            st.subheader("📋 各策略交易明细")
             tabs = st.tabs(list(results.keys()))
             for ti, (name, r) in enumerate(results.items()):
                 with tabs[ti]:
                     has_gs_fee = "total_commissions" in r
                     gs_cols = st.columns(5 if has_gs_fee else 4)
-                    gs_cols[0].metric(t("dca.metric.total_invest"), f"{r['total_invested']:,.2f}")
-                    gs_cols[1].metric(t("dca.metric.final_value"), f"{r['final_value']:,.2f}")
-                    gs_cols[2].metric(t("dca.metric.total_return"), f"{r['total_return_pct']:+.2f}%")
-                    gs_cols[3].metric(t("dca.metric.annual_return"), f"{r['annualized_return_pct']:+.2f}%")
+                    gs_cols[0].metric("总投入", f"{r['total_invested']:,.2f}")
+                    gs_cols[1].metric("终值", f"{r['final_value']:,.2f}")
+                    gs_cols[2].metric("总收益率", f"{r['total_return_pct']:+.2f}%")
+                    gs_cols[3].metric("年化收益率", f"{r['annualized_return_pct']:+.2f}%")
                     if has_gs_fee:
-                        gs_cols[4].metric(t("dca.metric.trade_fee"), f"{r.get('total_commissions', 0):,.2f}")
+                        gs_cols[4].metric("交易费用", f"{r.get('total_commissions', 0):,.2f}")
                     if not r["records"].empty:
                         rec = r["records"].copy()
                         if "日期" in rec.columns and hasattr(rec["日期"], "dt"):
@@ -270,56 +265,60 @@ def render_grid_search(price_series, start_date, end_date, symbol):
         st.markdown("---")
 
     # 选中的策略: 下跌加仓
-    st.subheader(t("grid.title.drop_strategy"))
-    st.markdown(t("grid.drop_strategy.desc"))
+    st.subheader("📐 下跌加仓策略")
+    st.markdown(
+        "**逻辑**: 每个交易日检查, 若当日涨跌幅 < -X% (即跌幅超过 X%), "
+        "则在当日以收盘价买入 Y 元。\n\n"
+        "**关键参数**: X = 跌幅阈值 (%), Y = 每期买入金额 (元)"
+    )
 
     # 快速预览
-    with st.expander(t("grid.quick_run"), expanded=False):
-        preview_X = st.number_input(t("grid.param.preview_x"), min_value=0.1, value=1.0, step=0.1,
+    with st.expander("⚡ 快速试运行 (当前参数)", expanded=False):
+        preview_X = st.number_input("预览: 跌幅阈值 X (%)", min_value=0.1, value=1.0, step=0.1,
                                     key="preview_x")
-        preview_Y = st.number_input(t("grid.param.preview_y"), min_value=100, value=5000, step=100,
+        preview_Y = st.number_input("预览: 每期买入 Y (元)", min_value=100, value=5000, step=100,
                                     key="preview_y")
-        if st.button(t("grid.btn.preview"), key="preview_btn"):
-            with st.spinner(t("grid.spinner.backtest")):
+        if st.button("运行预览", key="preview_btn"):
+            with st.spinner("回测中..."):
                 res = run_dropbuy_backtest(
                     price_series, X=preview_X, Y=preview_Y,
                     start_date=start_date.strftime("%Y-%m-%d"),
                     end_date=end_date.strftime("%Y-%m-%d"),
                 )
             if res.num_investments == 0:
-                st.warning(t("grid.warning.no_trigger"))
+                st.warning(f"所选参数在区间内无触发, 请降低 X 值")
             else:
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric(t("grid.metric.trigger_count"), res.num_investments)
-                c2.metric(t("grid.metric.total_invest"), f"{res.total_invested:,.2f}")
-                c3.metric(t("grid.metric.final_value"), f"{res.final_value:,.2f}")
-                c4.metric(t("grid.metric.annual_return"), f"{res.annualized_return_pct:+.2f}%")
+                c1.metric("触发次数", res.num_investments)
+                c2.metric("总投入", f"{res.total_invested:,.2f}")
+                c3.metric("终值", f"{res.final_value:,.2f}")
+                c4.metric("年化收益", f"{res.annualized_return_pct:+.2f}%")
 
     st.markdown("---")
 
     # 网格搜索参数
-    st.subheader(t("grid.search.title"))
+    st.subheader("🔬 网格搜索设置")
 
     gcol1, gcol2 = st.columns(2)
     with gcol1:
-        X_min = st.number_input(t("grid.param.x_min"), min_value=0.1, value=0.5, step=0.1)
-        X_max = st.number_input(t("grid.param.x_max"), min_value=0.1, value=3.0, step=0.1)
-        X_step = st.number_input(t("grid.param.x_step"), min_value=0.1, value=0.5, step=0.1)
+        X_min = st.number_input("X 最小值 (%)", min_value=0.1, value=0.5, step=0.1)
+        X_max = st.number_input("X 最大值 (%)", min_value=0.1, value=3.0, step=0.1)
+        X_step = st.number_input("X 步长 (%)", min_value=0.1, value=0.5, step=0.1)
     with gcol2:
-        Y_min = st.number_input(t("grid.param.y_min"), min_value=100, value=2000, step=100)
-        Y_max = st.number_input(t("grid.param.y_max"), min_value=100, value=10000, step=100)
-        Y_step = st.number_input(t("grid.param.y_step"), min_value=100, value=2000, step=100)
+        Y_min = st.number_input("Y 最小值 (元)", min_value=100, value=2000, step=100)
+        Y_max = st.number_input("Y 最大值 (元)", min_value=100, value=10000, step=100)
+        Y_step = st.number_input("Y 步长 (元)", min_value=100, value=2000, step=100)
 
-    n_folds = st.slider(t("grid.param.wf_folds"), min_value=2, max_value=8, value=3,
-                        help=t("grid.param.wf_folds.help"))
+    n_folds = st.slider("Walk-Forward 折数", min_value=2, max_value=8, value=3,
+                        help="将总区间切为 n 段, 每段依次作为验证集, 前段作为训练集")
 
     gs_max_total = st.number_input(
-        t("grid.param.max_invest_wf"),
+        "总投资上限 (元, 0=不限)",
         min_value=0, value=0, step=50000,
-        help=t("grid.param.max_invest_wf.help"),
+        help="该策略在整个回测区间内的累计投入上限 (训练+验证共享此额度); 0 表示不设限",
     )
 
-    run_gs = st.button(t("grid.btn.start_search"), type="primary", width='stretch')
+    run_gs = st.button("🚀 启动网格搜索", type="primary", width='stretch')
 
     # ═══════════════════════ 执行搜索 ═══════════════════════
 
@@ -336,21 +335,20 @@ def render_grid_search(price_series, start_date, end_date, symbol):
             Y_vals.append(round(y, 0))
             y += Y_step
 
-        n = len(X_vals)
-        m = len(Y_vals)
-        product = n * m
-
-        if product > 1000:
-            st.error(t("grid.error.too_many", n=n, m=m, product=product))
+        if len(X_vals) * len(Y_vals) > 1000:
+            st.error(f"组合过多 ({len(X_vals)}×{len(Y_vals)}={len(X_vals)*len(Y_vals)}), "
+                     f"超过上限 1000, 请增大步长或缩小范围")
             st.stop()
-        elif product > 300:
-            st.warning(t("grid.warning.large_search", n=n, m=m, product=product))
+        elif len(X_vals) * len(Y_vals) > 300:
+            st.warning(f"组合数较大 ({len(X_vals)}×{len(Y_vals)}={len(X_vals)*len(Y_vals)}), "
+                       f"预计耗时可能较长")
 
-        total_runs = product * n_folds
-        st.info(t("grid.info.search_size", n=n, m=m, product=product, total=total_runs))
+        total_runs = len(X_vals) * len(Y_vals) * n_folds
+        st.info(f"共有 {len(X_vals)}×{len(Y_vals)} = {len(X_vals)*len(Y_vals)} 种参数组合, "
+                f"共 {total_runs} 次回测, 预计 30~120 秒")
 
         status_text = st.empty()
-        status_text.info(t("grid.info.searching"))
+        status_text.info("⏳ 正在运行网格搜索...")
 
         try:
             gs_result = run_grid_search(
@@ -361,9 +359,9 @@ def render_grid_search(price_series, start_date, end_date, symbol):
                 n_folds=n_folds,
                 max_total=gs_max_total,
             )
-            status_text.success(t("grid.success.done"))
+            status_text.success("✅ 搜索完成!")
         except Exception as e:
-            st.error(t("grid.error.search_failed", error=e))
+            st.error(f"网格搜索失败: {e}")
             st.stop()
 
         # 保存结果
@@ -371,37 +369,32 @@ def render_grid_search(price_series, start_date, end_date, symbol):
 
         # 📊 结果显示
         st.markdown("---")
-        st.subheader(t("grid.result.title"))
+        st.subheader("📊 搜索结果")
 
         # 全局最优
-        st.success(t("grid.result.best",
-                     x=gs_result.best_params_overall['X'],
-                     y=gs_result.best_params_overall['Y'],
-                     r=gs_result.avg_val_return))
+        st.success(
+            f"**全局最优参数**: X = **{gs_result.best_params_overall['X']}%**, "
+            f"Y = **{gs_result.best_params_overall['Y']:.0f} 元**, "
+            f"各折验证集平均年化 = **{gs_result.avg_val_return:.2f}%**"
+        )
 
         # 每折详情
-        st.markdown(t("grid.result.best_per_fold"))
-        col_fold = t("grid.col.fold")
-        col_train_set = t("grid.col.train_set")
-        col_val_set = t("grid.col.val_set")
-        col_best_x = t("grid.col.best_x")
-        col_best_y = t("grid.col.best_y")
-        col_val_return = t("grid.col.val_return")
+        st.markdown("#### 每折最优参数")
         fold_rows = []
         for fold in gs_result.folds:
             dur = f"{fold.train_start[:7]} ~ {fold.train_end[:7]}" if fold.train_end > fold.train_start else "—"
             fold_rows.append({
-                col_fold: fold.fold_id + 1,
-                col_train_set: dur,
-                col_val_set: f"{fold.val_start[:7]} ~ {fold.val_end[:7]}",
-                col_best_x: fold.best_params.get("X", "—"),
-                col_best_y: f"{fold.best_params.get('Y', 0):.0f}",
-                col_val_return: f"{fold.best_val_return:.2f}%",
+                "折": fold.fold_id + 1,
+                "训练集": dur,
+                "验证集": f"{fold.val_start[:7]} ~ {fold.val_end[:7]}",
+                "最优 X": fold.best_params.get("X", "—"),
+                "最优 Y": f"{fold.best_params.get('Y', 0):.0f}",
+                "验证年化": f"{fold.best_val_return:.2f}%",
             })
         st.dataframe(pd.DataFrame(fold_rows), hide_index=True, width='stretch')
 
         # 热力图
-        st.markdown(t("grid.result.heatmap"))
+        st.markdown("#### 参数热力图 (各组合平均验证年化)")
         pivot = gs_result.trials_df.groupby(["X", "Y"])["val_annualized"].mean().reset_index()
         pivot_tbl = pivot.pivot_table(
             index="X", columns="Y", values="val_annualized", aggfunc="mean",
@@ -417,37 +410,33 @@ def render_grid_search(price_series, start_date, end_date, symbol):
             hovertemplate="X=%{y}, Y=%{x}<br>年化=%{z:.2f}%<extra></extra>",
         ))
         fig_heat.update_layout(
-            xaxis_title=t("grid.heatmap.x_title"),
-            yaxis_title=t("grid.heatmap.y_title"),
+            xaxis_title="Y (每期买入金额)",
+            yaxis_title="X (跌幅阈值 %)",
             height=400,
             margin=dict(l=10, r=10, t=10, b=10),
         )
         st.plotly_chart(fig_heat, width='stretch')
 
         # 全面结果表
-        st.markdown(t("grid.result.all"))
+        st.markdown("#### 全部网格搜索结果")
         display_cols = {
-            "fold": col_fold,
-            "X": t("grid.col.x"),
-            "Y": t("grid.col.y"),
-            "train_num_trades": t("grid.col.train_triggers"),
-            "train_annualized": t("grid.col.train_return"),
-            "val_num_trades": t("grid.col.val_triggers"),
-            "val_annualized": t("grid.col.val_return_pct"),
+            "fold": "折", "X": "X(%)", "Y": "Y(元)",
+            "train_num_trades": "训练触发次数", "train_annualized": "训练年化(%)",
+            "val_num_trades": "验证触发次数", "val_annualized": "验证年化(%)",
         }
         display_df = gs_result.trials_df[list(display_cols.keys())].rename(columns=display_cols)
         st.dataframe(display_df, hide_index=True, width='stretch')
 
-        st.caption(t("grid.result.saved", path=saved_path))
+        st.caption(f"结果已保存至: `{saved_path}`")
 
     # ═══════════════════════ 历史结果 ═══════════════════════
 
     st.markdown("---")
-    st.subheader(t("grid.history.title"))
+    st.subheader("📁 历史搜索结果")
 
     saved_list = list_saved_results(symbol=symbol if symbol else None)
     if not saved_list:
-        st.info(t("grid.history.empty"))
+        st.info("暂无历史搜索记录")
     else:
         names = []
         for item in saved_list:
@@ -455,17 +444,17 @@ def render_grid_search(price_series, start_date, end_date, symbol):
             bp = item.get("best_params_overall", {})
             av = item.get("avg_val_return", 0)
             names.append(f"{ts}  |  X={bp.get('X','?')}  Y={bp.get('Y','?')}  |  {av}%")
-        sel_name = st.selectbox(t("grid.history.select"), names, key="gs_history")
-        if sel_name and st.button(t("grid.history.load")):
+        sel_name = st.selectbox("选择历史记录查看", names, key="gs_history")
+        if sel_name and st.button("加载选中记录"):
             idx = names.index(sel_name)
             item = saved_list[idx]
             result = load_result(item["dir"])
             st.json({
                 "symbol": result.symbol,
-                tt("区间", "Range"): f"{result.total_start} ~ {result.total_end}",
-                tt("折数", "Folds"): result.n_folds,
-                tt("最优参数", "Best Params"): result.best_params_overall,
-                tt("平均验证年化", "Avg Val Return"): result.avg_val_return,
+                "区间": f"{result.total_start} ~ {result.total_end}",
+                "折数": result.n_folds,
+                "最优参数": result.best_params_overall,
+                "平均验证年化": result.avg_val_return,
             })
             if not result.trials_df.empty:
                 st.dataframe(result.trials_df, width='stretch')
