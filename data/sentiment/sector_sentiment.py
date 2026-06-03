@@ -88,12 +88,24 @@ def _reset_session():
 def _ak_call(fn, *args, **kwargs):
     """带指数退避重试的 AKShare 调用.
 
-    使用 tenacity 自动重试, 捕获 ConnectionError / ProtocolError /
-    ConnectionResetError, 每次重试前重置 Session.
+    使用 tenacity 自动重试, 捕获 ConnectionError / ConnectionResetError /
+    OSError, 每次重试前重置 Session.
     """
     from requests.exceptions import ConnectionError as ReqConnectionError
 
-    _call_attempts = 0
+    def _on_retry(retry_state):
+        """重试前重置 Session 并提示用户."""
+        _reset_session()
+        exc = retry_state.outcome.exception()
+        attempt = retry_state.attempt_number
+        wait = int(retry_state.next_action.sleep) if retry_state.next_action else 2
+        msg = f"⚠️ 连接失败 (第{attempt}次重试, 等待{wait}s): {type(exc).__name__}"
+        print(f"[sector_sentiment] {msg}", flush=True)
+        try:
+            import streamlit as st
+            st.toast(msg, icon="🔄")
+        except Exception:
+            pass
 
     @retry(
         stop=stop_after_attempt(4),
@@ -101,14 +113,10 @@ def _ak_call(fn, *args, **kwargs):
         retry=retry_if_exception_type(
             (ReqConnectionError, ConnectionResetError, OSError)
         ),
+        before_sleep=_on_retry,
         reraise=True,
     )
     def _call():
-        nonlocal _call_attempts
-        _call_attempts += 1
-        if _call_attempts > 1:
-            _reset_session()
-            time.sleep(1)
         return fn(*args, **kwargs)
 
     return _call()
