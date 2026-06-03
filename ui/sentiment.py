@@ -351,25 +351,26 @@ def _cjk_font_name() -> str | None:
     return None
 
 
-def _build_export_image(result: pd.DataFrame) -> bytes | None:
-    """用 matplotlib 构建排版优秀的导出图并返回 PNG bytes."""
-    import io, os
+# ── Export image helpers ──────────────────────────────────
+
+def _export_prepare_cjk():
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        import matplotlib.table as tbl
         from matplotlib.font_manager import FontProperties
     except ImportError:
-        return None
-
-    # 设置 CJK 字体
+        return False
     cjk = _cjk_font_name()
     if cjk:
         plt.rcParams["font.sans-serif"] = [cjk, "DejaVu Sans"]
         plt.rcParams["font.family"] = "sans-serif"
         plt.rcParams["axes.unicode_minus"] = False
+    return True
 
+
+def _export_title_ax(ax, result, cfg):
+    c, fs = cfg["colors"], cfg["font_sizes"]
     total = len(result)
     pos_count = int((result["sentiment_score"] > 0).sum())
     neg_count = total - pos_count
@@ -378,110 +379,110 @@ def _build_export_image(result: pd.DataFrame) -> bytes | None:
     bot_name = result.iloc[-1]["board_name"]
     bot_score = result.iloc[-1]["sentiment_score"]
 
-    fig = plt.figure(figsize=(14, 24), facecolor="white")
-    gs = fig.add_gridspec(5, 1, height_ratios=[0.07, 0.25, 0.16, 0.42, 0.10], hspace=0.65)
+    ax.axis("off")
+    ax.text(0.5, 0.3, f"板块情绪分析报告  —  {date.today()}",
+            ha="center", va="center", fontsize=fs["title"], fontweight="bold", color=c["title"],
+            transform=ax.transAxes)
 
-    # ── 标题行 ──
-    ax_title = fig.add_subplot(gs[0, 0])
-    ax_title.axis("off")
-    ax_title.text(
-        0.5, 0.3,
-        f"板块情绪分析报告  —  {date.today()}",
-        ha="center", va="center", fontsize=18, fontweight="bold", color="#1f2937",
-        transform=ax_title.transAxes,
-    )
-    ax_title.text(
-        0.5, -0.2,
-        f"总数 {total}   ·   正面 {pos_count}   ·   负面 {neg_count}   ·   "
-        f"最正面 {top_name} ({top_score:.3f})   ·   最负面 {bot_name} ({bot_score:.3f})",
-        ha="center", va="center", fontsize=9, color="#6b7280",
-        transform=ax_title.transAxes,
-    )
+    if cfg.get("show_kpi_cards", False):
+        kpi_y = -0.1
+        ax.text(0.12, kpi_y, f"+{pos_count}", ha="center", va="center",
+                fontsize=fs["subtitle"], fontweight="bold", color=c["bg"],
+                bbox=dict(boxstyle="round,pad=0.3", facecolor=c["pos"], edgecolor="none"),
+                transform=ax.transAxes)
+        ax.text(0.28, kpi_y, f"正面", ha="left", va="center",
+                fontsize=fs["subtitle"] - 1, color=c["subtitle"], transform=ax.transAxes)
+        ax.text(0.47, kpi_y, f"–{neg_count}", ha="center", va="center",
+                fontsize=fs["subtitle"], fontweight="bold", color=c["bg"],
+                bbox=dict(boxstyle="round,pad=0.3", facecolor=c["neg"], edgecolor="none"),
+                transform=ax.transAxes)
+        ax.text(0.63, kpi_y, f"负面", ha="left", va="center",
+                fontsize=fs["subtitle"] - 1, color=c["subtitle"], transform=ax.transAxes)
+        ax.text(0.85, kpi_y, f"最高  {top_name}  ({top_score:.3f})", ha="center", va="center",
+                fontsize=fs["subtitle"], color=c["subtitle"], transform=ax.transAxes)
+    else:
+        ax.text(0.5, -0.2,
+                f"总数 {total}   ·   正面 {pos_count}   ·   负面 {neg_count}   ·   "
+                f"最正面 {top_name} ({top_score:.3f})   ·   最负面 {bot_name} ({bot_score:.3f})",
+                ha="center", va="center", fontsize=fs["subtitle"], color=c["subtitle"],
+                transform=ax.transAxes)
 
-    # ── 散点图 ──
-    ax_sc = fig.add_subplot(gs[1, 0])
+    if cfg.get("decorations") == "double_line":
+        ax.axhline(y=-0.4, xmin=0.05, xmax=0.95, color=c["grid"], linewidth=0.5)
+        ax.axhline(y=-0.42, xmin=0.05, xmax=0.95, color=c["grid"], linewidth=0.5)
+    elif cfg.get("decorations") == "header_bar":
+        ax.axhline(y=-0.35, xmin=0, xmax=1, color=c["table_header_bg"], linewidth=3)
+
+
+def _export_scatter_ax(ax, result, cfg):
+    c, fs = cfg["colors"], cfg["font_sizes"]
     sc = result.copy()
     sc["score_abs"] = sc["sentiment_score"].abs()
-    n_ex = min(40, max(20, total // 3))
+    n_ex = min(40, max(20, len(result) // 3))
     ex_idx = sc["score_abs"].sort_values(ascending=False).index[:n_ex]
     ex = sc.loc[ex_idx]
 
-    ax_sc.scatter(sc["sentiment_score"], sc["change_pct"],
-                  s=8, c="lightgray", alpha=0.3, edgecolors="none", zorder=1)
+    ax.scatter(sc["sentiment_score"], sc["change_pct"],
+               s=8, c=c["grid"], alpha=0.3, edgecolors="none", zorder=1)
     pos = ex[ex["sentiment_score"] > 0]
     neg = ex[ex["sentiment_score"] <= 0]
     if not pos.empty:
-        ax_sc.scatter(pos["sentiment_score"], pos["change_pct"],
-                      s=40, c="#22c55e", edgecolors="white", linewidth=0.5, zorder=2, label="正面")
+        ax.scatter(pos["sentiment_score"], pos["change_pct"],
+                   s=40, c=c["pos"], edgecolors="white", linewidth=0.5, zorder=2, label="正面")
     if not neg.empty:
-        ax_sc.scatter(neg["sentiment_score"], neg["change_pct"],
-                      s=40, c="#ef4444", edgecolors="white", linewidth=0.5, zorder=2, label="负面")
-    # 标注情绪得分最高/最低各 5 个 — 自动防重叠
-    ann_idx = pd.concat([sc.nlargest(5, "sentiment_score"),
-                          sc.nsmallest(5, "sentiment_score")]).index
-    ann_rows = sc.loc[ann_idx].sort_values("change_pct")
-    yvals = ann_rows["change_pct"].values
-    offsets = [(0, 8)] * len(yvals)
-    for i in range(len(yvals) - 1):
-        if abs(yvals[i] - yvals[i + 1]) < 1.5:
-            offsets[i] = (0, -14)
-            offsets[i + 1] = (0, 8)
-    for idx, (_, r) in enumerate(ann_rows.iterrows()):
-        ax_sc.annotate(
-            r["board_name"],
-            (r["sentiment_score"], r["change_pct"]),
-            xytext=offsets[idx], textcoords="offset points",
-            ha="center", fontsize=7, color="#1f2937",
-            arrowprops=dict(arrowstyle="->", color="gray", lw=0.5),
-        )
-    ax_sc.axhline(y=0, linestyle="--", color="gray", linewidth=0.8)
-    ax_sc.axvline(x=0, linestyle="--", color="gray", linewidth=0.8)
-    ax_sc.set_xlabel("情绪得分", fontsize=10)
-    ax_sc.set_ylabel("涨跌幅 (%)", fontsize=10)
-    ax_sc.set_title("情绪 vs 涨跌幅", fontsize=12, fontweight="bold", pad=8)
-    ax_sc.legend(fontsize=8, loc="best")
-    ax_sc.spines["top"].set_visible(False)
-    ax_sc.spines["right"].set_visible(False)
+        ax.scatter(neg["sentiment_score"], neg["change_pct"],
+                   s=40, c=c["neg"], edgecolors="white", linewidth=0.5, zorder=2, label="负面")
 
-    # ── 直方图 ──
-    ax_hist = fig.add_subplot(gs[2, 0])
+    if cfg.get("show_annotations", True):
+        ann_n = cfg.get("annotations_n", 5)
+        ann_idx = pd.concat([sc.nlargest(ann_n, "sentiment_score"),
+                              sc.nsmallest(ann_n, "sentiment_score")]).index
+        ann_rows = sc.loc[ann_idx].sort_values("change_pct")
+        yvals = ann_rows["change_pct"].values
+        offsets = [(0, 8)] * len(yvals)
+        for i in range(len(yvals) - 1):
+            if abs(yvals[i] - yvals[i + 1]) < 1.5:
+                offsets[i] = (0, -14)
+                offsets[i + 1] = (0, 8)
+        for idx, (_, r) in enumerate(ann_rows.iterrows()):
+            ax.annotate(r["board_name"],
+                        (r["sentiment_score"], r["change_pct"]),
+                        xytext=offsets[idx], textcoords="offset points",
+                        ha="center", fontsize=fs["annotation"], color=c["annotation"],
+                        arrowprops=dict(arrowstyle="->", color=c["grid"], lw=0.5))
+
+    ax.axhline(y=0, linestyle="--", color=c["grid"], linewidth=0.8)
+    ax.axvline(x=0, linestyle="--", color=c["grid"], linewidth=0.8)
+    ax.set_xlabel("情绪得分", fontsize=fs["axis"])
+    ax.set_ylabel("涨跌幅 (%)", fontsize=fs["axis"])
+    ax.set_title("情绪 vs 涨跌幅", fontsize=fs["axis"] + 2, fontweight="bold", pad=8)
+    ax.legend(fontsize=fs["axis"] - 2, loc="best")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.set_facecolor(c["bg"])
+
+
+def _export_histogram_ax(ax, result, cfg):
+    c, fs = cfg["colors"], cfg["font_sizes"]
+    total = len(result)
     bins = min(30, max(10, total // 5))
-    ax_hist.hist(result["sentiment_score"], bins=bins, color="#3b82f6", edgecolor="white", linewidth=0.5)
-    ax_hist.axvline(x=0, linestyle="--", color="gray", linewidth=0.8)
-    ax_hist.set_xlabel("情绪得分", fontsize=10)
-    ax_hist.set_ylabel("板块数量", fontsize=10)
-    ax_hist.set_title("情绪得分分布", fontsize=12, fontweight="bold", pad=8)
-    ax_hist.spines["top"].set_visible(False)
-    ax_hist.spines["right"].set_visible(False)
+    ax.hist(result["sentiment_score"], bins=bins, color=c["hist"], edgecolor=c["bg"], linewidth=0.5)
+    ax.axvline(x=0, linestyle="--", color=c["grid"], linewidth=0.8)
+    ax.set_xlabel("情绪得分", fontsize=fs["axis"])
+    ax.set_ylabel("板块数量", fontsize=fs["axis"])
+    ax.set_title("情绪得分分布", fontsize=fs["axis"] + 2, fontweight="bold", pad=8)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.set_facecolor(c["bg"])
 
-    # ── 排行表 ──
-    ax_tbl = fig.add_subplot(gs[3, 0])
-    ax_tbl.axis("off")
-    ax_tbl.set_title("板块排行 Top / Bottom 20", fontsize=12, fontweight="bold", pad=10)
 
-    # ── 免责声明 ──
-    ax_footer = fig.add_subplot(gs[4, 0])
-    ax_footer.axis("off")
-    ax_footer.text(
-        0.02, 0.85,
-        "数据来源: 东方财富 (EastMoney) API via AKShare",
-        ha="left", va="top", fontsize=7.5, color="#9ca3af",
-        transform=ax_footer.transAxes,
-    )
-    ax_footer.text(
-        0.02, 0.55,
-        "算法说明: 5 因子加权情绪得分 — 宽度 (30%) · 主力资金 (25%) · 异动 (20%) · 涨跌幅 (15%) · 热度 (10%)",
-        ha="left", va="top", fontsize=7.5, color="#9ca3af",
-        transform=ax_footer.transAxes,
-    )
-    ax_footer.text(
-        0.02, 0.20,
-        "免责声明: 本报告仅供参考学习，不构成任何投资建议。股市有风险，投资需谨慎。",
-        ha="left", va="top", fontsize=7.5, color="#9ca3af",
-        transform=ax_footer.transAxes,
-    )
+def _export_table_ax(ax, result, cfg):
+    c, fs = cfg["colors"], cfg["font_sizes"]
+    total = len(result)
+    n = min(cfg["table_n"], total)
+    ax.axis("off")
+    ax.set_title(f"板块排行 Top / Bottom {n}", fontsize=fs["axis"] + 2, fontweight="bold", pad=10)
 
-    n = min(20, total)
     top = result.head(n)[["rank", "board_name", "sentiment_score", "change_pct"]].copy()
     bot = result.tail(n)[["rank", "board_name", "sentiment_score", "change_pct"]].copy()
     data_rows = []
@@ -493,28 +494,135 @@ def _build_export_image(result: pd.DataFrame) -> bytes | None:
 
     col_labels = ["排名", "板块名称", "情绪得分", "涨跌幅(%)"]
     cell_text = [[str(r[ci]) for ci in range(4)] for r in data_rows]
-    row_colors = (["#f0fdf4"] * n + ["#ffffff"] + ["#fef2f2"] * n)
+    row_colors = ([c["table_pos_bg"]] * n + [c["bg"]] + [c["table_neg_bg"]] * n)
 
-    table = ax_tbl.table(
-        cellText=cell_text,
-        colLabels=col_labels,
-        cellLoc="center",
-        loc="center",
+    table = ax.table(
+        cellText=cell_text, colLabels=col_labels,
+        cellLoc="center", loc="center",
         colWidths=[0.08, 0.35, 0.15, 0.15],
     )
     table.auto_set_font_size(False)
-    table.set_fontsize(9)
+    table.set_fontsize(fs["table"])
+    total_rows = n * 2 + 2
+    row_height = 1.0 / total_rows
     for (row, col), cell in table.get_celld().items():
         if row == 0:
-            cell.set_facecolor("#1f2937")
-            cell.set_text_props(color="white", fontweight="bold")
+            cell.set_facecolor(c["table_header_bg"])
+            cell.set_text_props(color=c["table_header_text"], fontweight="bold")
         else:
-            cell.set_facecolor(row_colors[row - 1] if row - 1 < len(row_colors) else "#ffffff")
-        cell.set_edgecolor("#e5e7eb")
-        cell.set_height(0.024)
+            idx = row - 1
+            cell.set_facecolor(row_colors[idx] if idx < len(row_colors) else c["bg"])
+        cell.set_edgecolor(c["table_border"])
+        cell.set_height(row_height * 0.95)
+
+
+def _export_footer_ax(ax, cfg):
+    c, fs = cfg["colors"], cfg["font_sizes"]
+    ax.axis("off")
+    for y, t in [
+        (0.85, "数据来源: 东方财富 (EastMoney) API via AKShare"),
+        (0.55, "算法说明: 5 因子加权情绪得分 — 宽度 (30%) · 主力资金 (25%) · 异动 (20%) · 涨跌幅 (15%) · 热度 (10%)"),
+        (0.20, "免责声明: 本报告仅供参考学习，不构成任何投资建议。股市有风险，投资需谨慎。"),
+    ]:
+        ax.text(0.02, y, t, ha="left", va="top", fontsize=fs["footer"], color=c["footer"],
+                transform=ax.transAxes)
+
+
+# ── Layout variants ─────────────────────────────────────
+
+def _render_column(result, cfg):
+    import matplotlib.pyplot as plt
+    fig = plt.figure(figsize=cfg["figsize"], facecolor=cfg["colors"]["bg"])
+    has_hist = cfg.get("show_histogram", True)
+    if has_hist:
+        nrows, ratios = 5, cfg["height_ratios"] if len(cfg["height_ratios"]) >= 5 else [0.07, 0.25, 0.16, 0.42, 0.10]
+    else:
+        nrows, ratios = 4, [0.08, 0.30, 0.48, 0.14]
+    gs = fig.add_gridspec(nrows, 1, height_ratios=ratios, hspace=cfg.get("hspace", 0.65))
+    _export_title_ax(fig.add_subplot(gs[0, 0]), result, cfg)
+    _export_scatter_ax(fig.add_subplot(gs[1, 0]), result, cfg)
+    if has_hist:
+        _export_histogram_ax(fig.add_subplot(gs[2, 0]), result, cfg)
+        _export_table_ax(fig.add_subplot(gs[3, 0]), result, cfg)
+        _export_footer_ax(fig.add_subplot(gs[4, 0]), cfg)
+    else:
+        _export_table_ax(fig.add_subplot(gs[2, 0]), result, cfg)
+        _export_footer_ax(fig.add_subplot(gs[3, 0]), cfg)
+    return fig
+
+
+def _render_column_compact(result, cfg):
+    import matplotlib.pyplot as plt
+    fig = plt.figure(figsize=cfg["figsize"], facecolor=cfg["colors"]["bg"])
+    gs = fig.add_gridspec(4, 1, height_ratios=cfg["height_ratios"], hspace=cfg.get("hspace", 0.55))
+    _export_title_ax(fig.add_subplot(gs[0, 0]), result, cfg)
+    _export_scatter_ax(fig.add_subplot(gs[1, 0]), result, cfg)
+    _export_table_ax(fig.add_subplot(gs[2, 0]), result, cfg)
+    _export_footer_ax(fig.add_subplot(gs[3, 0]), cfg)
+    return fig
+
+
+def _render_grid(result, cfg):
+    import matplotlib.pyplot as plt
+    c, fs = cfg["colors"], cfg["font_sizes"]
+    fig = plt.figure(figsize=cfg["figsize"], facecolor=c["bg"])
+    gs = fig.add_gridspec(4, 2, height_ratios=cfg["height_ratios"], hspace=cfg.get("hspace", 0.50),
+                           width_ratios=[0.5, 0.5])
+    _export_title_ax(fig.add_subplot(gs[0, :]), result, cfg)
+    _export_scatter_ax(fig.add_subplot(gs[1, 0]), result, cfg)
+    _export_histogram_ax(fig.add_subplot(gs[1, 1]), result, cfg)
+    _export_table_ax(fig.add_subplot(gs[2, 1]), result, cfg)
+    ax_kpi = fig.add_subplot(gs[2, 0])
+    ax_kpi.axis("off")
+    total = len(result)
+    pos_count = int((result["sentiment_score"] > 0).sum())
+    neg_count = total - pos_count
+    mean_score = result["sentiment_score"].mean()
+    top_name = result.iloc[0]["board_name"]
+    bot_name = result.iloc[-1]["board_name"]
+    for i, (label, value, color) in enumerate([
+        ("总板块数", str(total), c["title"]),
+        ("平均情绪", f"{mean_score:.4f}", c["pos"] if mean_score > 0 else c["neg"]),
+        ("正面/负面", f"{pos_count}/{neg_count}", c["subtitle"]),
+        ("最正面", top_name, c["pos"]),
+        ("最负面", bot_name, c["neg"]),
+    ]):
+        y_pos = 0.85 - i * 0.17
+        ax_kpi.text(0.1, y_pos, label, fontsize=fs["axis"] - 1, color=c["subtitle"],
+                     transform=ax_kpi.transAxes, va="center")
+        ax_kpi.text(0.55, y_pos, value, fontsize=fs["axis"] + 2, color=color,
+                     fontweight="bold", transform=ax_kpi.transAxes, va="center")
+    _export_footer_ax(fig.add_subplot(gs[3, :]), cfg)
+    return fig
+
+
+# ── Main entry ──────────────────────────────────────────
+
+def _build_export_image(
+    result: pd.DataFrame,
+    template: str = "minimal",
+    preview: bool = False,
+    **overrides,
+) -> bytes | None:
+    from data.sentiment.templates import resolve_template
+
+    if not _export_prepare_cjk():
+        return None
+    import io
+    import matplotlib.pyplot as plt
+
+    cfg = resolve_template(template, overrides, preview=preview)
+    layout = cfg.get("layout", "column")
+
+    if layout == "column_compact":
+        fig = _render_column_compact(result, cfg)
+    elif layout == "grid":
+        fig = _render_grid(result, cfg)
+    else:
+        fig = _render_column(result, cfg)
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=200, bbox_inches="tight", facecolor="white")
+    fig.savefig(buf, format="png", dpi=cfg["_dpi"], bbox_inches="tight", facecolor=cfg["colors"]["bg"])
     plt.close(fig)
     return buf.getvalue()
 
@@ -602,38 +710,107 @@ def _render_sector_scatter(result: pd.DataFrame):
 # ── 下载 (CSV + 导出图片) ──────────────────────────────
 
 def _render_sector_downloads(result: pd.DataFrame):
-    """CSV + 一键导出 PNG 按钮."""
+    """CSV + 导出图片编辑器."""
     csv = result.to_csv(index=False)
-    dc1, dc2 = st.columns(2)
-    with dc1:
-        st.download_button(
-            "📥 下载板块情绪数据 CSV",
-            data=csv,
-            file_name=f"sector_sentiment_{date.today()}.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-    with dc2:
-        _render_export_button(result)
-
-
-def _render_export_button(result: pd.DataFrame):
-    """渲染一键导出按钮."""
-    import io
-    buf = _build_export_image(result)
-    if buf is None:
-        st.caption("💡 安装 matplotlib 后可导出图片")
-        return
-
     st.download_button(
-        "📸 一键导出图片 (PNG)",
-        data=buf,
-        file_name=f"sector_sentiment_{date.today()}.png",
-        mime="image/png",
+        "📥 下载板块情绪数据 CSV",
+        data=csv,
+        file_name=f"sector_sentiment_{date.today()}.csv",
+        mime="text/csv",
         use_container_width=True,
     )
-    with st.popover("👁️ 预览"):
-        st.image(buf, use_container_width=True)
+    st.divider()
+    _render_export_editor(result)
+
+
+def _render_export_editor(result: pd.DataFrame):
+    """导出图片编辑器: 模板选择 + 自定义 + 实时预览 + 下载."""
+    from data.sentiment.templates import TEMPLATES, template_default_overrides
+
+    if "export_template" not in st.session_state:
+        st.session_state.export_template = "minimal"
+    if "export_overrides" not in st.session_state:
+        st.session_state.export_overrides = {}
+    if "export_preview" not in st.session_state:
+        st.session_state.export_preview = None
+    if "export_full" not in st.session_state:
+        st.session_state.export_full = None
+
+    st.markdown("### 🖌️ 导出设置")
+
+    keys = list(TEMPLATES.keys())
+    default_idx = keys.index(st.session_state.export_template) if st.session_state.export_template in keys else 0
+    template_name = st.selectbox(
+        "风格模板",
+        options=keys,
+        format_func=lambda k: TEMPLATES[k]["name"],
+        index=default_idx,
+        key="export_template_sel",
+    )
+
+    with st.expander("🎨 自定义颜色与布局", expanded=False):
+        defaults = template_default_overrides(template_name)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**颜色**")
+            bg = st.color_picker("背景色", value=defaults.get("bg", "#ffffff"))
+            title_c = st.color_picker("标题色", value=defaults.get("title", "#1f2937"))
+            pos_c = st.color_picker("涨色", value=defaults.get("pos", "#22c55e"))
+            neg_c = st.color_picker("跌色", value=defaults.get("neg", "#ef4444"))
+            hist_c = st.color_picker("直方图色", value=defaults.get("hist", "#3b82f6"))
+            tbl_header = st.color_picker("表头背景", value=defaults.get("table_header_bg", "#1f2937"))
+        with c2:
+            st.markdown("**字号 / 布局**")
+            title_size = st.slider("标题字号", 12, 28, value=defaults.get("title_size", 18), key="es_title_sz")
+            table_size = st.slider("表格字号", 5, 12, value=defaults.get("table", 9), key="es_tbl_sz")
+            ann_size = st.slider("标注字号", 5, 12, value=defaults.get("annotation", 7), key="es_ann_sz")
+            table_n = st.selectbox("排行数量", [5, 10, 20],
+                                   index=[5, 10, 20].index(
+                                       defaults.get("table_n", 20) if defaults.get("table_n") in [5, 10, 20] else 2),
+                                   key="es_table_n")
+            show_hist = st.checkbox("显示直方图", value=defaults.get("show_histogram", True), key="es_hist")
+            show_kpi = st.checkbox("显示 KPI 卡片", value=defaults.get("show_kpi_cards", False), key="es_kpi")
+
+        st.caption("修改后点击下方「应用更改」预览效果")
+        col_a, col_b = st.columns([1, 3])
+        with col_a:
+            if st.button("✅ 应用更改", type="primary", use_container_width=True, key="es_apply"):
+                overrides = {
+                    "bg": bg, "title": title_c, "pos": pos_c, "neg": neg_c,
+                    "hist": hist_c, "table_header_bg": tbl_header,
+                    "title_size": title_size, "table": table_size, "annotation": ann_size,
+                    "table_n": int(table_n),
+                    "show_histogram": show_hist,
+                    "show_kpi_cards": show_kpi,
+                }
+                st.session_state.export_template = template_name
+                st.session_state.export_overrides = overrides
+                st.session_state.export_preview = _build_export_image(
+                    result, template=template_name, preview=True, **overrides)
+                st.session_state.export_full = _build_export_image(
+                    result, template=template_name, preview=False, **overrides)
+                st.rerun()
+
+    changed = st.session_state.export_template != template_name
+    if st.session_state.export_preview is not None and not changed:
+        st.image(st.session_state.export_preview, use_container_width=True)
+    else:
+        with st.spinner("正在生成预览..."):
+            preview = _build_export_image(result, template=template_name, preview=True)
+            full = _build_export_image(result, template=template_name, preview=False)
+            st.session_state.export_template = template_name
+            st.session_state.export_preview = preview
+            st.session_state.export_full = full
+        st.image(preview, use_container_width=True)
+
+    if st.session_state.export_full is not None:
+        st.download_button(
+            "📸 下载高清 PNG",
+            data=st.session_state.export_full,
+            file_name=f"sector_sentiment_{date.today()}.png",
+            mime="image/png",
+            use_container_width=True,
+        )
 
 
 def _render_sector_history():
