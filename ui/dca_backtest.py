@@ -2,58 +2,59 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 
-from backtest.dca import run_dca_backtest, run_lump_sum_backtest, freq_map
+from utils.i18n import t
+from backtest.dca import run_dca_backtest, run_lump_sum_backtest
 from ui._helpers import COLORS
 
 
 def render_dca_backtest(price_series, start_date, end_date):
-    st.sidebar.markdown("### 定投参数")
+    st.sidebar.markdown(t("dca.sidebar.header"))
     dca_amount = st.sidebar.number_input(
-        "日均定投金额 (元)", min_value=10, value=100, step=10,
-        help="实际每期投入 = 日均金额 × 对应频率的交易日乘数",
+        t("dca.param.daily_amount"), min_value=10, value=100, step=10,
+        help=t("dca.param.daily_amount.help"),
     )
 
     all_freqs = ["daily", "weekly", "biweekly", "monthly", "quarterly", "yearly"]
     default_freqs = ["weekly", "monthly", "quarterly"]
     dca_freqs = st.sidebar.multiselect(
-        "定投频率 (可多选对比)", options=all_freqs,
+        t("dca.param.frequency"), options=all_freqs,
         default=default_freqs,
-        format_func=lambda x: freq_map.get(x, x),
+        format_func=lambda x: t("freq." + x),
     )
 
     dca_day = st.sidebar.number_input(
-        "每月/季执行日", min_value=1, max_value=28, value=1,
+        t("dca.param.exec_day"), min_value=1, max_value=28, value=1,
     )
 
     dca_max_total = st.sidebar.number_input(
-        "总投资上限 (元)", min_value=0, value=0, step=10000,
-        help="0 表示不设上限",
+        t("dca.param.max_invest"), min_value=0, value=0, step=10000,
+        help=t("dca.param.max_invest.help"),
     )
 
-    with st.sidebar.expander("💰 费率设置", expanded=False):
-        dca_commission = st.number_input("佣金费率", min_value=0.0, value=0.00025, step=0.00005, format="%.5f",
-                                         help="默认万2.5")
-        dca_min_commission = st.number_input("最低佣金(元)", min_value=0.0, value=5.0, step=1.0,
-                                             help="每笔交易最低佣金, 默认5元")
-        dca_stamp_duty = st.number_input("印花税率", min_value=0.0, value=0.001, step=0.0001, format="%.4f",
-                                         help="仅卖出时收取, 默认千1")
+    with st.sidebar.expander(t("dca.fee.header"), expanded=False):
+        dca_commission = st.number_input(t("dca.fee.commission"), min_value=0.0, value=0.00025, step=0.00005, format="%.5f",
+                                         help=t("dca.fee.commission.help"))
+        dca_min_commission = st.number_input(t("dca.fee.min_commission"), min_value=0.0, value=5.0, step=1.0,
+                                             help=t("dca.fee.min_commission.help"))
+        dca_stamp_duty = st.number_input(t("dca.fee.stamp"), min_value=0.0, value=0.001, step=0.0001, format="%.4f",
+                                         help=t("dca.fee.stamp.help"))
 
-    include_lump_sum = st.sidebar.checkbox("对比: 一次性投入", value=True)
+    include_lump_sum = st.sidebar.checkbox(t("dca.compare.lump_sum"), value=True)
 
-    run_btn = st.sidebar.button("🚀 开始回测", type="primary", width='stretch')
+    run_btn = st.sidebar.button(t("dca.btn.run"), type="primary", width='stretch')
 
     # 价格走势
     fig_price = go.Figure()
     fig_price.add_trace(go.Scatter(
         x=price_series.index, y=price_series.values,
-        mode="lines", name="价格",
+        mode="lines", name=t("dca.trace.price"),
         line=dict(color="#1f77b4", width=2),
     ))
     fig_price.update_layout(
-        xaxis_title="日期", yaxis_title="价格",
+        xaxis_title=t("dca.axis.date"), yaxis_title=t("dca.axis.price"),
         hovermode="x unified", margin=dict(l=10, r=10, t=10, b=10), height=380,
     )
-    st.subheader("📉 历史价格走势")
+    st.subheader(t("dca.title.price"))
     st.plotly_chart(fig_price, width='stretch')
 
     def _run_all(amount, freqs, day, max_total, commission, min_comm, stamp):
@@ -72,11 +73,11 @@ def render_dca_backtest(price_series, start_date, end_date):
         return results
 
     if not run_btn:
-        st.info("👈 在侧边栏设置好参数后, 点击「开始回测」按钮")
+        st.info(t("dca.info.waiting"))
         return
 
     if not dca_freqs:
-        st.warning("请至少选择一个定投频率")
+        st.warning(t("dca.warning.no_freq"))
         return
 
     start_str = start_date.strftime("%Y-%m-%d")
@@ -84,7 +85,7 @@ def render_dca_backtest(price_series, start_date, end_date):
 
     results = {}
     try:
-        with st.spinner("执行回测对比..."):
+        with st.spinner(t("dca.spinner.running")):
             results = _run_all(dca_amount, dca_freqs, dca_day, dca_max_total,
                                dca_commission, dca_min_commission, dca_stamp_duty)
 
@@ -103,59 +104,66 @@ def render_dca_backtest(price_series, start_date, end_date):
                     if lump["total_invested"] > 0:
                         results["一次性投入"] = lump
     except Exception as e:
-        st.error(f"回测执行失败: {e}")
+        st.error(t("dca.error.run_failed", error=e))
         return
 
     if not results:
-        st.warning("在所选区间内没有找到符合条件的定投日期, 请调整参数")
+        st.warning(t("dca.warning.no_dates"))
         return
 
     # 对比表
-    st.subheader("🎯 策略对比")
+    st.subheader(t("dca.title.compare"))
     has_fees = "total_commissions" in next(iter(results.values()), {})
+    _entry_strat = t("dca.col.strategy")
+    _entry_inv = t("dca.col.total_invest")
+    _entry_fv = t("dca.col.final_value")
+    _entry_tr = t("dca.col.total_return")
+    _entry_ar = t("dca.col.annual_return")
+    _entry_ic = t("dca.col.invest_count")
+    _entry_tf = t("dca.col.trade_fee")
     comp_data = []
     for name, r in results.items():
         entry = {
-            "策略": name, "总投入": r["total_invested"],
-            "终值": r["final_value"], "总收益率%": r["total_return_pct"],
-            "年化收益率%": r["annualized_return_pct"],
-            "定投次数": r["num_investments"],
+            _entry_strat: name, _entry_inv: r["total_invested"],
+            _entry_fv: r["final_value"], _entry_tr: r["total_return_pct"],
+            _entry_ar: r["annualized_return_pct"],
+            _entry_ic: r["num_investments"],
         }
         if has_fees:
-            entry["交易费用"] = r.get("total_commissions", 0)
+            entry[_entry_tf] = r.get("total_commissions", 0)
         comp_data.append(entry)
     comp_df = pd.DataFrame(comp_data)
 
     def _hlight(val, col):
-        if col in ("总收益率%", "年化收益率%"):
+        if col in (_entry_tr, _entry_ar):
             best = comp_df[col].max()
             return "background-color: #2ca02c33" if val == best else ""
         return ""
 
-    cols_to_hlight = ["总收益率%", "年化收益率%"]
+    cols_to_hlight = [_entry_tr, _entry_ar]
     blank_count = len(comp_df.columns) - len(cols_to_hlight)
     st.dataframe(
         comp_df.style.apply(lambda row: [
-            _hlight(row["总收益率%"], "总收益率%"),
-            _hlight(row["年化收益率%"], "年化收益率%"),
+            _hlight(row[_entry_tr], _entry_tr),
+            _hlight(row[_entry_ar], _entry_ar),
             *([""] * blank_count),
         ], axis=1).format({
-            "总投入": "{:,.2f}", "终值": "{:,.2f}",
-            "总收益率%": "{:+.2f}%", "年化收益率%": "{:+.2f}%",
-            "交易费用": "{:,.2f}",
+            _entry_inv: "{:,.2f}", _entry_fv: "{:,.2f}",
+            _entry_tr: "{:+.2f}%", _entry_ar: "{:+.2f}%",
+            _entry_tf: "{:,.2f}",
         }),
         width='stretch', hide_index=True,
         column_config={
-            "总投入": st.column_config.NumberColumn(format="%.2f"),
-            "终值": st.column_config.NumberColumn(format="%.2f"),
-            "总收益率%": st.column_config.NumberColumn(format="+%.2f%%"),
-            "年化收益率%": st.column_config.NumberColumn(format="+%.2f%%"),
-            "交易费用": st.column_config.NumberColumn(format="%.2f"),
+            _entry_inv: st.column_config.NumberColumn(format="%.2f"),
+            _entry_fv: st.column_config.NumberColumn(format="%.2f"),
+            _entry_tr: st.column_config.NumberColumn(format="+%.2f%%"),
+            _entry_ar: st.column_config.NumberColumn(format="+%.2f%%"),
+            _entry_tf: st.column_config.NumberColumn(format="%.2f"),
         },
     )
 
     # 市值对比图
-    st.subheader("📊 持仓市值对比")
+    st.subheader(t("dca.title.position"))
     fig_c = go.Figure()
     for i, (name, r) in enumerate(results.items()):
         c = COLORS[i % len(COLORS)]
@@ -166,14 +174,14 @@ def render_dca_backtest(price_series, start_date, end_date):
                       dash="dash" if name == "一次性投入" else "solid"),
         ))
     fig_c.update_layout(
-        xaxis_title="日期", yaxis_title="持仓市值 (元)",
+        xaxis_title=t("dca.axis.date"), yaxis_title=t("dca.axis.position"),
         hovermode="x unified", margin=dict(l=10, r=10, t=10, b=10), height=450,
         legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
     )
     st.plotly_chart(fig_c, width='stretch')
 
     # 累计投入对比
-    st.subheader("💰 累计投入对比")
+    st.subheader(t("dca.title.invest"))
     fig_inv = go.Figure()
     for i, (name, r) in enumerate(results.items()):
         c = COLORS[i % len(COLORS)]
@@ -182,14 +190,14 @@ def render_dca_backtest(price_series, start_date, end_date):
             mode="lines", name=name, line=dict(color=c, width=2, dash="dot"),
         ))
     fig_inv.update_layout(
-        xaxis_title="日期", yaxis_title="累计投入 (元)",
+        xaxis_title=t("dca.axis.date"), yaxis_title=t("dca.axis.invest"),
         hovermode="x unified", margin=dict(l=10, r=10, t=10, b=10), height=350,
         legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
     )
     st.plotly_chart(fig_inv, width='stretch')
 
     # 收益率走势
-    st.subheader("📈 收益率走势对比")
+    st.subheader(t("dca.title.return"))
     fig_ret = go.Figure()
     for i, (name, r) in enumerate(results.items()):
         ret_s = ((r["portfolio_series"] - r["invested_series"]) / r["invested_series"] * 100)
@@ -198,29 +206,30 @@ def render_dca_backtest(price_series, start_date, end_date):
         fig_ret.add_trace(go.Scatter(
             x=ret_s.index, y=ret_s.values, mode="lines", name=name, line=dict(color=c, width=2),
         ))
-    fig_ret.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="盈亏线")
+    fig_ret.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text=t("dca.chart.zero_line"))
     fig_ret.update_layout(
-        xaxis_title="日期", yaxis_title="收益率 (%)",
+        xaxis_title=t("dca.axis.date"), yaxis_title=t("dca.axis.return"),
         hovermode="x unified", margin=dict(l=10, r=10, t=10, b=10), height=350,
         legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
     )
     st.plotly_chart(fig_ret, width='stretch')
 
     # 明细
-    st.subheader("📋 各策略定投明细")
+    st.subheader(t("dca.title.detail"))
     tabs = st.tabs(list(results.keys()))
     for ti, (name, r) in enumerate(results.items()):
         with tabs[ti]:
             has_fee_cols = "total_commissions" in r
             cols = st.columns(5 if has_fee_cols else 4)
-            cols[0].metric("总投入", f"{r['total_invested']:,.2f}")
-            cols[1].metric("终值", f"{r['final_value']:,.2f}")
-            cols[2].metric("总收益率", f"{r['total_return_pct']:+.2f}%")
-            cols[3].metric("年化收益率", f"{r['annualized_return_pct']:+.2f}%")
+            cols[0].metric(t("dca.metric.total_invest"), f"{r['total_invested']:,.2f}")
+            cols[1].metric(t("dca.metric.final_value"), f"{r['final_value']:,.2f}")
+            cols[2].metric(t("dca.metric.total_return"), f"{r['total_return_pct']:+.2f}%")
+            cols[3].metric(t("dca.metric.annual_return"), f"{r['annualized_return_pct']:+.2f}%")
             if has_fee_cols:
-                cols[4].metric("交易费用", f"{r.get('total_commissions', 0):,.2f}")
+                cols[4].metric(t("dca.metric.trade_fee"), f"{r.get('total_commissions', 0):,.2f}")
             if not r["records"].empty:
                 rec = r["records"].copy()
-                if "日期" in rec.columns and hasattr(rec["日期"], "dt"):
-                    rec["日期"] = rec["日期"].dt.strftime("%Y-%m-%d")
+                _entry_date = t("dca.axis.date")
+                if _entry_date in rec.columns and hasattr(rec[_entry_date], "dt"):
+                    rec[_entry_date] = rec[_entry_date].dt.strftime("%Y-%m-%d")
                 st.dataframe(rec, width='stretch', hide_index=True)

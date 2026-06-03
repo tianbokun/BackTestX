@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from data_fetcher import ASSET_TYPE_CONFIG, get_price_series
 from ui._helpers import cached_fetch
+from utils.i18n import t, init_language, render_lang_switcher
 from ui.dca_backtest import render_dca_backtest
 from ui.grid_search import render_grid_search
 from ui.rl_training import render_rl_training
@@ -355,13 +356,14 @@ def _inject_global_styles():
 # ══════════════════════════════════════════════════════════════
 
 st.set_page_config(
-    page_title="A股定投回测系统",
+    page_title=t("app.title"),
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 _inject_global_styles()
+init_language()
 
 # ── Session state init ──
 for key in ("rl_agent", "rl_model_info", "rl_hp_agent", "rl_hp_params",
@@ -378,9 +380,21 @@ for key in ("rl_model_just_saved",):
 #  顶部 Tab 导航 — Pill Tabs
 # ══════════════════════════════════════════════════════════════
 
+_TAB_KEYS = ["dca", "grid", "rl", "hrl", "sentiment", "task", "symbol"]
+_TAB_LOCALE = {
+    "dca": "app.tab.dca",
+    "grid": "app.tab.grid",
+    "rl": "app.tab.rl",
+    "hrl": "app.tab.hrl",
+    "sentiment": "app.tab.sentiment",
+    "task": "app.tab.task",
+    "symbol": "app.tab.symbol",
+}
+
 mode = st.radio(
     "_mode",
-    ["📊 定投回测", "🎯 网格搜索", "🤖 强化学习", "🧠 分层RL", "📊 情绪数据", "📋 训练任务", "📋 代码管理"],
+    options=_TAB_KEYS,
+    format_func=lambda x: t(_TAB_LOCALE[x]),
     horizontal=True,
     label_visibility="collapsed",
     key="mode_tab",
@@ -391,29 +405,36 @@ mode = st.radio(
 #  侧边栏 — 公共参数 (按 Tab 条件显示)
 # ══════════════════════════════════════════════════════════════
 
-needs_sidebar_symbol = (mode.startswith("📊") and "情绪" not in mode) or mode.startswith("🎯")
+needs_sidebar_symbol = mode in ("dca", "grid")
 
 if needs_sidebar_symbol:
+    def _asset_label(x):
+        cfg = ASSET_TYPE_CONFIG[x]
+        if st.session_state.get("_lang", "zh") == "en":
+            return cfg.get("label_en", cfg["label"])
+        return cfg["label"]
+
     asset_type = st.sidebar.selectbox(
-        "资产类型",
+        t("sidebar.asset_type"),
         options=list(ASSET_TYPE_CONFIG.keys()),
-        format_func=lambda x: ASSET_TYPE_CONFIG[x]["label"],
+        format_func=_asset_label,
     )
     asset_config = ASSET_TYPE_CONFIG[asset_type]
     symbol = st.sidebar.text_input(
-        "代码", placeholder=asset_config["search_hint"],
-        help="输入资产代码, 如 000001, 510300, 110011",
+        t("sidebar.symbol_code"),
+        placeholder=asset_config.get("search_hint_en", asset_config["search_hint"]) if st.session_state.get("_lang", "zh") == "en" else asset_config["search_hint"],
+        help=t("sidebar.symbol_code.help"),
     ).strip()
     today = date.today()
     col1, col2 = st.sidebar.columns(2)
     with col1:
         start_date = col1.date_input(
-            "开始日期", value=date(today.year - 5, 1, 1),
+            t("sidebar.start_date"), value=date(today.year - 5, 1, 1),
             min_value=date(1970, 1, 1), max_value=today,
         )
     with col2:
         end_date = col2.date_input(
-            "结束日期", value=today,
+            t("sidebar.end_date"), value=today,
             min_value=date(1970, 1, 1), max_value=today,
         )
 else:
@@ -423,12 +444,15 @@ else:
     start_date = date(today.year - 5, 1, 1)
     end_date = today
 
+_ADJUST_MAP = {"qfq": "sidebar.adjust.prev", "hfq": "sidebar.adjust.post", "": "sidebar.adjust.none"}
 adjust = st.sidebar.selectbox(
-    "复权方式",
-    options={"qfq": "前复权", "hfq": "后复权", "": "不复权"},
-    format_func=lambda x: {"qfq": "前复权", "hfq": "后复权", "": "不复权"}[x],
+    t("sidebar.adjust"),
+    options=["qfq", "hfq", ""],
+    format_func=lambda x: t(_ADJUST_MAP[x]),
     index=0,
 )
+
+render_lang_switcher()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -437,7 +461,7 @@ adjust = st.sidebar.selectbox(
 
 def _fetch_data():
     if not symbol:
-        st.info(f"👈 请在侧边栏输入{ASSET_TYPE_CONFIG[asset_type]['label']}代码后开始")
+        st.info(t("app.no_data_info", type=_asset_label(asset_type)))
         st.stop()
     df = None
     try:
@@ -445,21 +469,21 @@ def _fetch_data():
         end_str = end_date.strftime("%Y%m%d")
         df = cached_fetch(symbol, asset_type, start_str, end_str, adjust)
     except Exception as e:
-        st.error(f"数据获取失败: {e}")
+        st.error(t("app.fetch_failed", error=e))
         st.stop()
     if df.empty:
-        st.warning(f"未获取到 {symbol} 的数据, 请检查代码是否正确")
+        st.warning(t("app.no_data_warning", symbol=symbol))
         st.stop()
     price = get_price_series(df)
     if price is None or len(price) == 0:
-        st.warning("无法从数据中提取价格序列")
+        st.warning(t("app.no_price_data"))
         st.stop()
     return df, price
 
 if needs_sidebar_symbol:
     df, price_series = _fetch_data()
 
-    with st.expander("📋 原始数据预览", expanded=False):
+    with st.expander(t("app.raw_data_preview"), expanded=False):
         display_df = df.copy()
         if isinstance(display_df.index, pd.DatetimeIndex):
             display_df = display_df.reset_index()
@@ -470,27 +494,25 @@ if needs_sidebar_symbol:
 #  主路由
 # ══════════════════════════════════════════════════════════════
 
-if mode == "📊 定投回测":
+if mode == "dca":
     render_dca_backtest(price_series, start_date, end_date)
-elif mode.startswith("📊 情绪"):
+elif mode == "sentiment":
     render_sentiment_dashboard()
-elif mode.startswith("🎯"):
+elif mode == "grid":
     render_grid_search(price_series, start_date, end_date, symbol)
-elif mode.startswith("🤖"):
+elif mode == "rl":
     render_rl_training(end_date, adjust)
-elif mode.startswith("🧠"):
+elif mode == "hrl":
     render_hierarchical_rl(end_date, adjust)
-elif mode == "📋 训练任务":
+elif mode == "task":
     render_task_manager()
-elif mode.startswith("📋"):
+elif mode == "symbol":
     render_symbol_manager()
 
 
 # ── 页脚 ──
 st.markdown("---")
 st.markdown(
-    '<p class="footer-caption">'
-    "⚠️ 本工具仅供学习研究使用，回测历史收益不代表未来表现，不构成任何投资建议。"
-    "数据来源：AKShare / 东方财富（A股）</p>",
+    f'<p class="footer-caption">{t("app.footer")}</p>',
     unsafe_allow_html=True,
 )
