@@ -23,6 +23,7 @@ from ui.hierarchical_rl import render_hierarchical_rl
 from ui.symbol_manager import render_symbol_manager
 from ui.task_manager import render_task_manager
 from ui.sentiment import render_sentiment_dashboard
+from ui.intel_dca import render_intel_dca
 
 
 # ══════════════════════════════════════════════════════════════
@@ -380,7 +381,7 @@ for key in ("rl_model_just_saved",):
 
 mode = st.radio(
     "_mode",
-    ["📊 定投回测", "🎯 网格搜索", "🤖 强化学习", "🧠 分层RL", "📊 情绪数据", "📋 训练任务", "📋 代码管理"],
+    ["📊 定投回测", "🎯 网格搜索", "🧮 智能定投", "🤖 强化学习", "🧠 分层RL", "📊 情绪数据", "📋 训练任务", "📋 代码管理"],
     horizontal=True,
     label_visibility="collapsed",
     key="mode_tab",
@@ -391,7 +392,7 @@ mode = st.radio(
 #  侧边栏 — 公共参数 (按 Tab 条件显示)
 # ══════════════════════════════════════════════════════════════
 
-needs_sidebar_symbol = (mode.startswith("📊") and "情绪" not in mode) or mode.startswith("🎯")
+needs_sidebar_symbol = (mode.startswith("📊") and "情绪" not in mode) or mode.startswith("🎯") or mode.startswith("🧮")
 
 if needs_sidebar_symbol:
     asset_type = st.sidebar.selectbox(
@@ -476,6 +477,8 @@ elif mode.startswith("📊 情绪"):
     render_sentiment_dashboard()
 elif mode.startswith("🎯"):
     render_grid_search(price_series, start_date, end_date, symbol)
+elif mode.startswith("🧮"):
+    render_intel_dca(price_series, start_date, end_date, symbol, asset_type)
 elif mode.startswith("🤖"):
     render_rl_training(end_date, adjust)
 elif mode.startswith("🧠"):
