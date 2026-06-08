@@ -198,119 +198,113 @@ def render_intel_dca():
     st.markdown("---")
     calc_btn = st.button("💡 计算当前建议", type="primary", use_container_width=True)
 
-    if not calc_btn:
+    if calc_btn:
+        if max_amount <= base_amount:
+            st.warning("最高金额应大于基准金额")
+        else:
+            call_avg_cost = avg_cost if avg_cost > 0 else None
+
+            params = {
+                "ma_period": ma_period,
+                "ma_adjustment": ma_adjust,
+                "low_percentile": low_pct,
+                "high_percentile": high_pct,
+                "cost_min_rate": cost_min_rate,
+                "cost_max_rate": cost_max_rate,
+                "target_increment": target_inc,
+                "drop_threshold": drop_th,
+                "drop_buy_base": drop_base,
+                "cooldown_days": cooldown,
+                "grid_lower": grid_lower,
+                "grid_upper": grid_upper,
+                "grid_count": int(grid_count),
+                "amount_per_grid": amount_per_grid,
+                "short_period": short_p,
+                "long_period": long_p,
+            }
+
+            results = calc_all_strategies(
+                price_series=price_series,
+                base_amount=float(base_amount),
+                min_amount=float(min_amount),
+                max_amount=float(max_amount),
+                params=params,
+                symbol=symbol,
+                asset_type=asset_type,
+                avg_cost=call_avg_cost,
+                existing_shares=float(existing_shares),
+                periods_elapsed=int(periods),
+            )
+
+            if not results:
+                st.error("计算失败, 请检查数据")
+            else:
+                st.markdown("### 📊 各策略计算结果对比")
+                rows = []
+                for key, r in results.items():
+                    rows.append({
+                        "策略": r.name,
+                        "信号": f"{_signal_emoji(r.signal)} {r.signal}",
+                        "建议金额": f"{r.amount:.0f} 元" if r.amount > 0 else "—",
+                        "占基准": f"{r.amount_pct:.0f}%" if r.amount > 0 else "—",
+                        "说明": r.explanation,
+                    })
+                if rows:
+                    display_df = pd.DataFrame(rows)
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+                st.markdown("### 💰 策略排行 (按建议金额)")
+                ranked = [(k, r) for k, r in results.items() if r.amount > 0]
+                ranked.sort(key=lambda x: x[1].amount, reverse=True)
+                if ranked:
+                    cols = st.columns(len(ranked))
+                    for i, (col, (k, r)) in enumerate(zip(cols, ranked)):
+                        with col:
+                            st.metric(
+                                label=f"{_signal_emoji(r.signal)} {r.name}",
+                                value=f"{r.amount:.0f}元",
+                                delta=f"{r.amount_pct:.0f}%",
+                            )
+
+                st.markdown("### 📋 各策略详细计算过程")
+                for order_name in [
+                    "ma_deviation", "valuation", "cost_average", "value_averaging",
+                    "drop_trigger", "grid_trading", "trend_following",
+                ]:
+                    r = results.get(order_name)
+                    if r is None:
+                        continue
+                    bg = _signal_color(r.signal)
+                    with st.container():
+                        st.markdown(f"""
+                        <div style="background:{bg}; border-radius:12px; padding:0.75rem 1rem; margin-bottom:0.5rem; border:1px solid #e2e8f0;">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <div><strong>{r.name}</strong>
+                                    <span style="margin-left:8px; font-size:0.9rem;">{_signal_emoji(r.signal)} {r.signal}</span>
+                                </div>
+                                <div style="font-size:1.2rem; font-weight:700;">
+                                    {f"{r.amount:.0f} 元" if r.amount > 0 else "—"}
+                                    <span style="font-size:0.8rem; color:#64748b; margin-left:4px;">
+                                        {f"({r.amount_pct:.0f}%)" if r.amount > 0 else ""}
+                                    </span>
+                                </div>
+                            </div>
+                            <div style="margin-top:4px; color:#475569; font-size:0.85rem;">
+                                {r.explanation}
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        with st.expander("查看详细计算过程", expanded=False):
+                            if r.key_metrics:
+                                st.markdown("**关键指标**")
+                                for mk, mv in r.key_metrics.items():
+                                    st.markdown(f"- {mk}: **{mv}**")
+                            if r.detail:
+                                st.markdown("**计算过程**")
+                                st.code(r.detail)
+    else:
         st.info("👆 设置好参数后点击「计算当前建议」查看各策略结果")
-        return
-
-    if max_amount <= base_amount:
-        st.warning("最高金额应大于基准金额")
-        return
-
-    call_avg_cost = avg_cost if avg_cost > 0 else None
-
-    params = {
-        "ma_period": ma_period,
-        "ma_adjustment": ma_adjust,
-        "low_percentile": low_pct,
-        "high_percentile": high_pct,
-        "cost_min_rate": cost_min_rate,
-        "cost_max_rate": cost_max_rate,
-        "target_increment": target_inc,
-        "drop_threshold": drop_th,
-        "drop_buy_base": drop_base,
-        "cooldown_days": cooldown,
-        "grid_lower": grid_lower,
-        "grid_upper": grid_upper,
-        "grid_count": int(grid_count),
-        "amount_per_grid": amount_per_grid,
-        "short_period": short_p,
-        "long_period": long_p,
-    }
-
-    results = calc_all_strategies(
-        price_series=price_series,
-        base_amount=float(base_amount),
-        min_amount=float(min_amount),
-        max_amount=float(max_amount),
-        params=params,
-        symbol=symbol,
-        asset_type=asset_type,
-        avg_cost=call_avg_cost,
-        existing_shares=float(existing_shares),
-        periods_elapsed=int(periods),
-    )
-
-    if not results:
-        st.error("计算失败, 请检查数据")
-        return
-
-    # ── 结果表格 ──
-    st.markdown("### 📊 各策略计算结果对比")
-    rows = []
-    for key, r in results.items():
-        rows.append({
-            "策略": r.name,
-            "信号": f"{_signal_emoji(r.signal)} {r.signal}",
-            "建议金额": f"{r.amount:.0f} 元" if r.amount > 0 else "—",
-            "占基准": f"{r.amount_pct:.0f}%" if r.amount > 0 else "—",
-            "说明": r.explanation,
-        })
-    if rows:
-        display_df = pd.DataFrame(rows)
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-    # ── 总览: 建议金额排行 ──
-    st.markdown("### 💰 策略排行 (按建议金额)")
-    ranked = [(k, r) for k, r in results.items() if r.amount > 0]
-    ranked.sort(key=lambda x: x[1].amount, reverse=True)
-    if ranked:
-        cols = st.columns(len(ranked))
-        for i, (col, (k, r)) in enumerate(zip(cols, ranked)):
-            with col:
-                st.metric(
-                    label=f"{_signal_emoji(r.signal)} {r.name}",
-                    value=f"{r.amount:.0f}元",
-                    delta=f"{r.amount_pct:.0f}%",
-                )
-
-    # ── 各策略详情 (展开) ──
-    st.markdown("### 📋 各策略详细计算过程")
-    for order_name in [
-        "ma_deviation", "valuation", "cost_average", "value_averaging",
-        "drop_trigger", "grid_trading", "trend_following",
-    ]:
-        r = results.get(order_name)
-        if r is None:
-            continue
-        bg = _signal_color(r.signal)
-        with st.container():
-            st.markdown(f"""
-            <div style="background:{bg}; border-radius:12px; padding:0.75rem 1rem; margin-bottom:0.5rem; border:1px solid #e2e8f0;">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <div><strong>{r.name}</strong>
-                        <span style="margin-left:8px; font-size:0.9rem;">{_signal_emoji(r.signal)} {r.signal}</span>
-                    </div>
-                    <div style="font-size:1.2rem; font-weight:700;">
-                        {f"{r.amount:.0f} 元" if r.amount > 0 else "—"}
-                        <span style="font-size:0.8rem; color:#64748b; margin-left:4px;">
-                            {f"({r.amount_pct:.0f}%)" if r.amount > 0 else ""}
-                        </span>
-                    </div>
-                </div>
-                <div style="margin-top:4px; color:#475569; font-size:0.85rem;">
-                    {r.explanation}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            with st.expander("查看详细计算过程", expanded=False):
-                if r.key_metrics:
-                    st.markdown("**关键指标**")
-                    for mk, mv in r.key_metrics.items():
-                        st.markdown(f"- {mk}: **{mv}**")
-                if r.detail:
-                    st.markdown("**计算过程**")
-                    st.code(r.detail)
 
     # ── 价格走势 + MA 参考图 ──
     st.markdown("### 📈 价格走势及均线参考")
