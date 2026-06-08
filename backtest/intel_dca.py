@@ -624,3 +624,62 @@ def calc_all_strategies(
         long_period=params.get("long_period", 120),
     )
     return results
+
+
+# ──────────────────────────────────────────────
+# 历史回测 — 均线偏离法
+# ──────────────────────────────────────────────
+
+def backtest_ma_deviation(
+    price_series: pd.Series,
+    base_daily: float,
+    min_daily: float,
+    max_daily: float,
+    ma_period: int = 250,
+    adjustment_factor: float = 2.0,
+    lookback_weeks: int = 52,
+    trade_days_per_week: int = 5,
+) -> pd.DataFrame:
+    """逐周回测均线偏离法, 无未来函数.
+
+    每个时间点仅使用截止到该周的日线数据计算建议金额.
+    """
+    if not _safe_series(price_series, ma_period + 5):
+        return pd.DataFrame()
+
+    weekly = price_series.resample("W").last().dropna()
+    weekly = weekly.iloc[-lookback_weeks - ma_period // 5:] if len(weekly) > lookback_weeks else weekly
+
+    base_weekly = base_daily * trade_days_per_week
+    min_weekly = min_daily * trade_days_per_week
+    max_weekly = max_daily * trade_days_per_week
+
+    rows = []
+    for dt, week_price in weekly.items():
+        if len(rows) >= lookback_weeks:
+            break
+        data_slice = price_series[price_series.index <= dt]
+        if len(data_slice) < ma_period:
+            continue
+        r = calc_ma_deviation(
+            data_slice, float(week_price),
+            base_weekly, min_weekly, max_weekly,
+            ma_period=ma_period,
+            adjustment_factor=adjustment_factor,
+        )
+        deviation_pct = float(r.key_metrics.get("偏离度", "0%").replace("%", ""))
+        rows.append({
+            "date": dt,
+            "price": float(week_price),
+            "deviation_pct": round(deviation_pct, 2),
+            "amount": r.amount,
+            "baseline": base_weekly,
+            "signal": r.signal,
+            "amount_pct": r.amount_pct,
+        })
+
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["date"])
+    return df

@@ -3,7 +3,9 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import date
 
-from backtest.intel_dca import calc_all_strategies, _safe_series
+from backtest.intel_dca import (
+    calc_all_strategies, backtest_ma_deviation, _safe_series,
+)
 from data.symbol_registry import SymbolRegistry
 from ui._helpers import cached_fetch
 from data_fetcher import get_price_series
@@ -346,3 +348,116 @@ def render_intel_dca():
         xaxis_title="日期", yaxis_title="价格",
     )
     st.plotly_chart(fig, use_container_width=True)
+
+    # ════════════════════════════════════════════════
+    #  🕰️ 历史回测验证 — 均线偏离法
+    # ════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("### 🕰️ 历史回测验证 — 均线偏离法")
+
+    bt_expander = st.expander("回测设置", expanded=True)
+    with bt_expander:
+        col1, col2 = st.columns(2)
+        bt_weeks = col1.slider(
+            "回测周数", min_value=12, max_value=104, value=52, step=4,
+            key="bt_weeks",
+        )
+        col2.markdown("")
+        col2.markdown("**策略**: 均线偏离法")
+        run_bt = st.button("📊 运行回测", type="primary", use_container_width=True)
+
+    if run_bt:
+        with st.spinner(f"正在回测过去 {bt_weeks} 周..."):
+            bt_df = backtest_ma_deviation(
+                price_series,
+                base_daily=float(base_amount),
+                min_daily=float(min_amount),
+                max_daily=float(max_amount),
+                ma_period=ma_period,
+                adjustment_factor=ma_adjust,
+                lookback_weeks=bt_weeks,
+                trade_days_per_week=5,
+            )
+
+        if bt_df.empty:
+            st.warning("回测数据不足, 请增大回测周数或检查数据范围")
+        else:
+            # ── 统计卡片 ──
+            buy_count = int((bt_df["signal"] == "买入").sum())
+            pause_count = int((bt_df["signal"] == "暂停").sum())
+            total_periods = len(bt_df)
+            avg_amount = bt_df["amount"].mean()
+            above_baseline = (bt_df["amount"] > bt_df["baseline"]).sum()
+            below_baseline = (bt_df["amount"] < bt_df["baseline"]).sum()
+
+            c1, c2, c3, c4, c5, c6 = st.columns(6)
+            c1.metric("回测期数", f"{total_periods}")
+            c2.metric("平均建议(周)", f"{avg_amount:.0f}")
+            c3.metric("买入次数", f"{buy_count}")
+            c4.metric("暂停次数", f"{pause_count}")
+            c5.metric("超基准", f"{above_baseline}")
+            c6.metric("低于基准", f"{below_baseline}")
+
+            # ── 回测图表 ──
+            fig_bt = go.Figure()
+            color_map = {"买入": "#22c55e", "暂停": "#ef4444", "数据不足": "#94a3b8"}
+            signals = bt_df["signal"].unique()
+
+            fig_bt.add_trace(go.Scatter(
+                x=bt_df["date"], y=bt_df["amount"],
+                mode="lines+markers", name="均线法建议金额",
+                line=dict(color="#3b82f6", width=2),
+                marker=dict(
+                    size=8, color=bt_df["signal"].map(color_map),
+                    symbol="circle",
+                ),
+                text=[
+                    f"信号: {s}<br>金额: {a:.0f}<br>MA偏离: {d:+.2f}%<br>占基准: {p:.0f}%"
+                    for s, a, d, p in zip(
+                        bt_df["signal"], bt_df["amount"],
+                        bt_df["deviation_pct"], bt_df["amount_pct"],
+                    )
+                ],
+                hoverinfo="text+x+y",
+            ))
+            fig_bt.add_hline(
+                y=float(base_amount) * 5,
+                line_dash="dash", line_color="#94a3b8",
+                annotation_text=f"固定周投 ({float(base_amount)*5:.0f})",
+                annotation_position="bottom right",
+            )
+            fig_bt.update_layout(
+                title="逐周建议金额 vs 固定周投",
+                xaxis_title="日期", yaxis_title="建议金额 (元/周)",
+                hovermode="x unified", height=420,
+                margin=dict(l=10, r=10, t=30, b=10),
+                legend=dict(orientation="h", y=1.02),
+            )
+            st.plotly_chart(fig_bt, use_container_width=True)
+
+            # ── 偏离度辅助图 ──
+            fig_dev = go.Figure()
+            fig_dev.add_trace(go.Scatter(
+                x=bt_df["date"], y=bt_df["deviation_pct"],
+                mode="lines", name="偏离度(%)",
+                line=dict(color="#f59e0b", width=1.5),
+                fill="tozeroy", fillcolor="rgba(245,158,11,0.12)",
+            ))
+            fig_dev.add_hline(y=0, line_dash="dot", line_color="#94a3b8")
+            fig_dev.update_layout(
+                title="均线偏离度变化",
+                xaxis_title="日期", yaxis_title="偏离度 (%)",
+                height=260, margin=dict(l=10, r=10, t=20, b=10),
+                hovermode="x unified",
+            )
+            st.plotly_chart(fig_dev, use_container_width=True)
+
+            # ── 明细表 ──
+            with st.expander("查看逐周明细数据"):
+                display_bt = bt_df[["date", "price", "deviation_pct", "amount", "baseline", "signal"]].copy()
+                display_bt["date"] = display_bt["date"].dt.strftime("%Y-%m-%d")
+                display_bt.columns = ["日期", "价格", "偏离度(%)", "建议金额", "固定周投", "信号"]
+                display_bt["偏离度(%)"] = display_bt["偏离度(%)"].map("{:+.2f}".format)
+                display_bt["建议金额"] = display_bt["建议金额"].map("{:.0f}".format)
+                display_bt["固定周投"] = display_bt["固定周投"].map("{:.0f}".format)
+                st.dataframe(display_bt, use_container_width=True, hide_index=True)
