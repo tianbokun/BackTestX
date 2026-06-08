@@ -671,6 +671,7 @@ def backtest_ma_deviation(
         rows.append({
             "date": dt,
             "price": float(week_price),
+            "ma": float(data_slice.rolling(ma_period).mean().iloc[-1]),
             "deviation_pct": round(deviation_pct, 2),
             "amount": r.amount,
             "baseline": base_weekly,

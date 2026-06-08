@@ -446,6 +446,43 @@ def render_intel_dca():
             )
             st.plotly_chart(fig_dev, use_container_width=True)
 
+            # ── 双轴对比图: 建议金额 vs 净值 ──
+            fig_dual = go.Figure()
+
+            fig_dual.add_trace(go.Scatter(
+                x=bt_df["date"], y=bt_df["amount"],
+                mode="lines+markers", name="建议金额",
+                line=dict(color="#3b82f6", width=2),
+                marker=dict(size=6, color=bt_df["signal"].map(color_map), symbol="circle"),
+                text=[
+                    f"信号: {s}<br>金额: {a:.0f}<br>MA偏离: {d:+.2f}%"
+                    for s, a, d in zip(bt_df["signal"], bt_df["amount"], bt_df["deviation_pct"])
+                ],
+                hoverinfo="text+x+y",
+            ))
+            fig_dual.add_trace(go.Scatter(
+                x=bt_df["date"], y=bt_df["price"],
+                mode="lines", name="净值",
+                line=dict(color="#10b981", width=2),
+                yaxis="y2",
+            ))
+            fig_dual.add_trace(go.Scatter(
+                x=bt_df["date"], y=bt_df["ma"],
+                mode="lines", name=f"MA{ma_period}",
+                line=dict(color="#f59e0b", width=1.5, dash="dash"),
+                yaxis="y2",
+            ))
+            fig_dual.update_layout(
+                title="建议金额 vs 净值走势",
+                xaxis=dict(title="日期"),
+                yaxis=dict(title="建议金额 (元/周)", side="left"),
+                yaxis2=dict(title="净值", side="right", overlaying="y"),
+                hovermode="x unified", height=420,
+                margin=dict(l=10, r=10, t=30, b=10),
+                legend=dict(orientation="h", y=1.02),
+            )
+            st.plotly_chart(fig_dual, use_container_width=True)
+
             # ── 明细表 ──
             with st.expander("查看逐周明细数据"):
                 display_bt = bt_df[["date", "price", "deviation_pct", "amount", "baseline", "signal"]].copy()
