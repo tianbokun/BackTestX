@@ -392,7 +392,7 @@ mode = st.radio(
 #  侧边栏 — 公共参数 (按 Tab 条件显示)
 # ══════════════════════════════════════════════════════════════
 
-needs_sidebar_symbol = (mode.startswith("📊") and "情绪" not in mode) or mode.startswith("🎯") or mode.startswith("🧮")
+needs_sidebar_symbol = (mode.startswith("📊") and "情绪" not in mode) or mode.startswith("🎯")
 
 if needs_sidebar_symbol:
     asset_type = st.sidebar.selectbox(
@@ -478,7 +478,7 @@ elif mode.startswith("📊 情绪"):
 elif mode.startswith("🎯"):
     render_grid_search(price_series, start_date, end_date, symbol)
 elif mode.startswith("🧮"):
-    render_intel_dca(price_series, start_date, end_date, symbol, asset_type)
+    render_intel_dca()
 elif mode.startswith("🤖"):
     render_rl_training(end_date, adjust)
 elif mode.startswith("🧠"):
