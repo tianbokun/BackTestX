@@ -655,7 +655,7 @@ def backtest_ma_deviation(
     max_weekly = max_daily * trade_days_per_week
 
     rows = []
-    for dt, week_price in weekly.items():
+    for dt, week_price in reversed(list(weekly.items())):
         if len(rows) >= lookback_weeks:
             break
         data_slice = price_series[price_series.index <= dt]
@@ -677,6 +677,7 @@ def backtest_ma_deviation(
             "signal": r.signal,
             "amount_pct": r.amount_pct,
         })
+    rows.reverse()
 
     if not rows:
         return pd.DataFrame()
