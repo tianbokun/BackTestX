@@ -125,13 +125,13 @@ def render_intel_dca():
     # ── 定投参数 ──
     st.markdown("---")
     st.markdown("### 定投参数设置")
-    col1, col2, col3 = st.columns(3)
+    st.caption("基准金额自动取上下限中点, 即价格等于均线时的正常投额")
+    col1, col2 = st.columns(2)
     with col1:
-        base_amount = st.number_input("基准定投金额 (元)", min_value=100, value=1000, step=100, key="intel_base2")
-    with col2:
         min_amount = st.number_input("最低金额 (元)", min_value=0, value=500, step=100, key="intel_min2")
-    with col3:
-        max_amount = st.number_input("最高金额 (元)", min_value=base_amount, value=3000, step=100, key="intel_max2")
+    with col2:
+        max_amount = st.number_input("最高金额 (元)", min_value=100, value=3000, step=100, key="intel_max2")
+    base_amount = (min_amount + max_amount) / 2
 
     avg_cost = st.number_input(
         "当前持仓平均成本 (可选, 留空则自动模拟)", min_value=0.0, value=0.0,
@@ -199,7 +199,7 @@ def render_intel_dca():
     calc_btn = st.button("💡 计算当前建议", type="primary", use_container_width=True)
 
     if calc_btn:
-        if max_amount <= base_amount:
+        if max_amount <= min_amount:
             st.warning("最高金额应大于基准金额")
         else:
             call_avg_cost = avg_cost if avg_cost > 0 else None
