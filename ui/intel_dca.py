@@ -4,7 +4,8 @@ import plotly.graph_objects as go
 from datetime import date
 
 from backtest.intel_dca import (
-    calc_all_strategies, backtest_ma_deviation, _safe_series,
+    calc_all_strategies, backtest_ma_deviation,
+    simulate_portfolios, calc_cagr, _safe_series,
 )
 from data.symbol_registry import SymbolRegistry
 from ui._helpers import cached_fetch
@@ -482,6 +483,56 @@ def render_intel_dca():
                 legend=dict(orientation="h", y=1.02),
             )
             st.plotly_chart(fig_dual, use_container_width=True)
+
+            # ── 收益对比: 智能 vs 固定 vs 梭哈 ──
+            port_df = simulate_portfolios(bt_df)
+            if not port_df.empty:
+                st.markdown("### 📊 收益对比 (总投入本金对齐)")
+
+                last = port_df.iloc[-1]
+                days = (port_df["date"].iloc[-1] - port_df["date"].iloc[0]).total_seconds() / 86400
+
+                def _fmt(v): return f"{v:.2f}%"
+                def _cagr(v, inv): return calc_cagr(v, inv, days)
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("智能定投",
+                          _fmt(last["smart_return"]),
+                          f"年化 {_cagr(last['smart_value'], last['smart_invested'])*100:.2f}%")
+                c2.metric("固定定投",
+                          _fmt(last["fixed_return"]),
+                          f"年化 {_cagr(last['fixed_value'], last['fixed_invested'])*100:.2f}%")
+                c3.metric("一次性梭哈",
+                          _fmt(last["lump_return"]),
+                          f"年化 {_cagr(last['lump_value'], last['lump_invested'])*100:.2f}%")
+
+                fig_ret = go.Figure()
+
+                fig_ret.add_trace(go.Scatter(
+                    x=port_df["date"], y=port_df["smart_return"],
+                    mode="lines", name="智能定投",
+                    line=dict(color="#3b82f6", width=2.5),
+                    fill="tozeroy", fillcolor="rgba(59,130,246,0.08)",
+                ))
+                fig_ret.add_trace(go.Scatter(
+                    x=port_df["date"], y=port_df["fixed_return"],
+                    mode="lines", name="固定定投",
+                    line=dict(color="#10b981", width=2),
+                ))
+                fig_ret.add_trace(go.Scatter(
+                    x=port_df["date"], y=port_df["lump_return"],
+                    mode="lines", name="一次性梭哈",
+                    line=dict(color="#f59e0b", width=2, dash="dash"),
+                ))
+                fig_ret.add_hline(y=0, line_dash="dot", line_color="#94a3b8")
+                fig_ret.update_layout(
+                    title="累计收益率对比",
+                    xaxis_title="日期", yaxis_title="累计收益率 (%)",
+                    hovermode="x unified", height=400,
+                    margin=dict(l=10, r=10, t=30, b=10),
+                    legend=dict(orientation="h", y=1.02),
+                )
+                st.plotly_chart(fig_ret, use_container_width=True)
 
             # ── 明细表 ──
             with st.expander("查看逐周明细数据"):

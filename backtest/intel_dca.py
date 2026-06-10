@@ -685,3 +685,75 @@ def backtest_ma_deviation(
     df = pd.DataFrame(rows)
     df["date"] = pd.to_datetime(df["date"])
     return df
+
+
+def simulate_portfolios(
+    bt_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """模拟三种策略的逐周收益率对比, 总投入本金一致.
+
+    输入: backtest_ma_deviation 的返回 (含 date, price, amount 列).
+    返回: 每行 date / three portfolios' value, invested, return.
+    """
+    if bt_df.empty or len(bt_df) < 2:
+        return pd.DataFrame()
+
+    dates = bt_df["date"].values
+    prices = bt_df["price"].values
+    smart_amounts = bt_df["amount"].values
+    n = len(dates)
+    total_principal = smart_amounts.sum()
+    fixed_amount = total_principal / n
+
+    history = []
+    smart_shares = 0.0
+    smart_invested = 0.0
+    fixed_shares = 0.0
+    fixed_invested = 0.0
+
+    for i in range(n):
+        dt = dates[i]
+        p = prices[i]
+
+        # 智能定投 — 当期实际投入
+        smart_shares += smart_amounts[i] / p
+        smart_invested += smart_amounts[i]
+        smart_value = smart_shares * p
+
+        # 固定定投
+        fixed_shares += fixed_amount / p
+        fixed_invested += fixed_amount
+        fixed_value = fixed_shares * p
+
+        # 一次性梭哈 — 第一期全仓买入
+        if i == 0:
+            lump_shares = total_principal / p
+        lump_value = lump_shares * p
+
+        history.append({
+            "date": dt,
+            "price": p,
+            "smart_invested": smart_invested,
+            "smart_value": smart_value,
+            "smart_return": (smart_value / smart_invested - 1) * 100,
+            "fixed_invested": fixed_invested,
+            "fixed_value": fixed_value,
+            "fixed_return": (fixed_value / fixed_invested - 1) * 100,
+            "lump_invested": total_principal,
+            "lump_value": lump_value,
+            "lump_return": (lump_value / total_principal - 1) * 100,
+        })
+
+    result = pd.DataFrame(history)
+    result["date"] = pd.to_datetime(result["date"])
+    return result
+
+
+def calc_cagr(final_value: float, total_invested: float, days: float) -> float:
+    """计算年化收益率."""
+    if total_invested <= 0 or days <= 0:
+        return 0.0
+    years = days / 365.25
+    if years <= 0:
+        return 0.0
+    return (final_value / total_invested) ** (1 / years) - 1
