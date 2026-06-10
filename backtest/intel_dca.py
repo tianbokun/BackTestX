@@ -648,7 +648,6 @@ def backtest_ma_deviation(
         return pd.DataFrame()
 
     weekly = price_series.resample("W").last().dropna()
-    weekly = weekly.iloc[-lookback_weeks - ma_period // 5:] if len(weekly) > lookback_weeks else weekly
 
     base_weekly = base_daily * trade_days_per_week
     min_weekly = min_daily * trade_days_per_week
