@@ -515,16 +515,22 @@ def render_intel_dca():
                     mode="lines", name="智能定投",
                     line=dict(color="#3b82f6", width=2.5),
                     fill="tozeroy", fillcolor="rgba(59,130,246,0.08)",
+                    text=[f"收益率: {r:.2f}%<br>投入: {v:.0f}" for r, v in zip(port_df["smart_return"], port_df["smart_invested"])],
+                    hoverinfo="text+x",
                 ))
                 fig_ret.add_trace(go.Scatter(
                     x=port_df["date"], y=port_df["fixed_return"],
                     mode="lines", name="固定定投",
                     line=dict(color="#10b981", width=2),
+                    text=[f"收益率: {r:.2f}%<br>投入: {v:.0f}" for r, v in zip(port_df["fixed_return"], port_df["fixed_invested"])],
+                    hoverinfo="text+x",
                 ))
                 fig_ret.add_trace(go.Scatter(
                     x=port_df["date"], y=port_df["lump_return"],
                     mode="lines", name="一次性梭哈",
                     line=dict(color="#f59e0b", width=2, dash="dash"),
+                    text=[f"收益率: {r:.2f}%<br>投入: {v:.0f}" for r, v in zip(port_df["lump_return"], port_df["lump_invested"])],
+                    hoverinfo="text+x",
                 ))
                 fig_ret.add_hline(y=0, line_dash="dot", line_color="#94a3b8")
                 fig_ret.update_layout(
