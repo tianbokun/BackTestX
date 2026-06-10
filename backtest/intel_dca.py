@@ -688,11 +688,13 @@ def backtest_ma_deviation(
 
 def simulate_portfolios(
     bt_df: pd.DataFrame,
+    max_daily: float = 0,
+    trade_days_per_week: int = 5,
 ) -> pd.DataFrame:
     """模拟三种策略的逐周收益率对比, 总投入本金一致.
 
     输入: backtest_ma_deviation 的返回 (含 date, price, amount 列).
-    返回: 每行 date / three portfolios' value, invested, return.
+    返回: 每行 date / four portfolios' value, invested, return.
     """
     if bt_df.empty or len(bt_df) < 2:
         return pd.DataFrame()
@@ -703,6 +705,9 @@ def simulate_portfolios(
     n = len(dates)
     total_principal = smart_amounts.sum()
     fixed_amount = total_principal / n
+    max_weekly = max_daily * trade_days_per_week
+
+    max_budget = total_principal
 
     history = []
     smart_shares = 0.0
@@ -729,6 +734,17 @@ def simulate_portfolios(
             lump_shares = total_principal / p
         lump_value = lump_shares * p
 
+        # 最大值定投: 每期投入 max_weekly 直到总预算耗尽
+        max_amount_i = min(max_weekly, max_budget) if i == n - 1 else min(max_weekly, max_budget)
+        if i == 0:
+            max_shares = 0.0
+            max_invested = 0.0
+        actual = min(max_weekly, max_budget)
+        max_shares += actual / p
+        max_invested += actual
+        max_budget -= actual
+        max_value = max_shares * p
+
         history.append({
             "date": dt,
             "price": p,
@@ -741,6 +757,9 @@ def simulate_portfolios(
             "lump_invested": total_principal,
             "lump_value": lump_value,
             "lump_return": (lump_value / total_principal - 1) * 100,
+            "max_invested": max_invested,
+            "max_value": max_value,
+            "max_return": (max_value / max_invested - 1) * 100 if max_invested > 0 else 0,
         })
 
     result = pd.DataFrame(history)

@@ -487,7 +487,7 @@ def render_intel_dca():
             st.plotly_chart(fig_dual, use_container_width=True)
 
             # ── 收益对比: 智能 vs 固定 vs 梭哈 ──
-            port_df = simulate_portfolios(bt_df)
+            port_df = simulate_portfolios(bt_df, max_daily=float(max_amount))
             if not port_df.empty:
                 st.markdown("### 📊 收益对比 (总投入本金对齐)")
 
@@ -497,7 +497,7 @@ def render_intel_dca():
                 def _fmt(v): return f"{v:.2f}%"
                 def _cagr(v, inv): return calc_cagr(v, inv, days)
 
-                c1, c2, c3 = st.columns(3)
+                c1, c2, c3, c4 = st.columns(4)
                 c1.metric("智能定投",
                           _fmt(last["smart_return"]),
                           f"年化 {_cagr(last['smart_value'], last['smart_invested'])*100:.2f}%")
@@ -507,6 +507,9 @@ def render_intel_dca():
                 c3.metric("一次性梭哈",
                           _fmt(last["lump_return"]),
                           f"年化 {_cagr(last['lump_value'], last['lump_invested'])*100:.2f}%")
+                c4.metric("最大值定投",
+                          _fmt(last["max_return"]),
+                          f"年化 {_cagr(last['max_value'], last['max_invested'])*100:.2f}%")
 
                 fig_ret = go.Figure()
 
@@ -530,6 +533,13 @@ def render_intel_dca():
                     mode="lines", name="一次性梭哈",
                     line=dict(color="#f59e0b", width=2, dash="dash"),
                     text=[f"收益率: {r:.2f}%<br>投入: {v:.0f}" for r, v in zip(port_df["lump_return"], port_df["lump_invested"])],
+                    hoverinfo="text+x",
+                ))
+                fig_ret.add_trace(go.Scatter(
+                    x=port_df["date"], y=port_df["max_return"],
+                    mode="lines", name="最大值定投",
+                    line=dict(color="#8b5cf6", width=2, dash="dash"),
+                    text=[f"收益率: {r:.2f}%<br>投入: {v:.0f}" for r, v in zip(port_df["max_return"], port_df["max_invested"])],
                     hoverinfo="text+x",
                 ))
                 fig_ret.add_hline(y=0, line_dash="dot", line_color="#94a3b8")
