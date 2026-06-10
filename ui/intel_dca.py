@@ -353,9 +353,11 @@ def render_intel_dca():
     bt_expander = st.expander("回测设置", expanded=True)
     with bt_expander:
         col1, col2 = st.columns(2)
+        weekly_full = price_series.resample("W").last().dropna()
+        max_bt_weeks = max(0, len(weekly_full) - max(ma_period // 5, 1))
         bt_weeks = col1.slider(
-            "回测周数", min_value=12, max_value=104, value=52, step=4,
-            key="bt_weeks",
+            "回测周数", min_value=12, max_value=max_bt_weeks or 12,
+            value=min(52, max_bt_weeks or 52), step=4, key="bt_weeks",
         )
         col2.markdown("")
         col2.markdown("**策略**: 均线偏离法")
