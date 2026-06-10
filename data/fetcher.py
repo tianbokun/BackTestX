@@ -181,7 +181,19 @@ def fetch_etf_history(
         err = e
 
     try:
-        nav_df = fetch_open_fund_nav(symbol=symbol)
+        df = ak.fund_lof_hist_em(symbol=symbol, period=period,
+                                 start_date=_validate_date(start_date),
+                                 end_date=_validate_date(end_date), adjust=adjust)
+        if not df.empty:
+            df["日期"] = pd.to_datetime(df["日期"])
+            df.set_index("日期", inplace=True)
+            write_cache(ck, df)
+            return df
+    except Exception as e:
+        err = e
+
+    try:
+        nav_df = fetch_open_fund_nav(symbol=symbol, adjust=adjust)
         if not nav_df.empty:
             nav_df = nav_df.rename(columns={"单位净值": "收盘"})
             write_cache(ck, nav_df)
@@ -191,7 +203,7 @@ def fetch_etf_history(
 
     raise ConnectionError(
         f"无法获取ETF {symbol} 的数据。可能是代码不存在、类型选择有误或网络波动。"
-        f"已尝试 kline 和基金净值两种路径均失败。({err})"
+        f"已尝试 kline、LOF 接口和基金净值三种路径均失败。({err})"
     )
 
 
@@ -254,7 +266,19 @@ def fetch_lof_history(
             continue
 
     try:
-        nav_df = fetch_open_fund_nav(symbol=symbol)
+        df = ak.fund_etf_hist_em(symbol=symbol, period=period,
+                                 start_date=_validate_date(start_date),
+                                 end_date=_validate_date(end_date), adjust=adjust)
+        if not df.empty:
+            df["日期"] = pd.to_datetime(df["日期"])
+            df.set_index("日期", inplace=True)
+            write_cache(ck, df)
+            return df
+    except Exception as e:
+        err = e
+
+    try:
+        nav_df = fetch_open_fund_nav(symbol=symbol, adjust=adjust)
         if not nav_df.empty:
             nav_df = nav_df.rename(columns={"单位净值": "收盘"})
             write_cache(ck, nav_df)
@@ -264,7 +288,7 @@ def fetch_lof_history(
 
     raise ConnectionError(
         f"无法获取LOF {symbol} 的数据。可能是不支持的 LOF 代码或 QDII 基金。"
-        f"已尝试 kline 和基金净值两种路径均失败。({err})"
+        f"已尝试 kline、ETF 接口和基金净值三种路径均失败。({err})"
     )
 
 
@@ -272,11 +296,29 @@ def fetch_lof_history(
 #  4.  开放式基金
 # ══════════════════════════════════════════
 
+def _forward_adjust_nav(nav_df: pd.DataFrame, adjust: str) -> pd.DataFrame:
+    if adjust != "qfq" or nav_df.empty or "单位净值" not in nav_df.columns:
+        return nav_df
+    df = nav_df.copy()
+    s = df["单位净值"]
+    ratio = s / s.shift(1)
+    events = ratio[(ratio < 0.8) | (ratio > 1.25)]
+    if events.empty:
+        return nav_df
+    cumulative = 1.0
+    for idx in reversed(sorted(events.index)):
+        cumulative *= events[idx]
+        s.loc[s.index < idx] *= cumulative
+    df["单位净值"] = s
+    return df
+
+
 def fetch_open_fund_nav(
     symbol: str,
     indicator: str = "单位净值走势",
+    adjust: str = "",
 ) -> pd.DataFrame:
-    ck = cache_key("open_fund", symbol, indicator)
+    ck = cache_key("open_fund", symbol, indicator, adjust) if adjust else cache_key("open_fund", symbol, indicator)
     cached = read_cache(ck)
     if cached is not None:
         return cached
@@ -286,6 +328,8 @@ def fetch_open_fund_nav(
         date_col = [c for c in df.columns if "日期" in c][0]
         df[date_col] = pd.to_datetime(df[date_col])
         df.set_index(date_col, inplace=True)
+        if adjust:
+            df = _forward_adjust_nav(df, adjust)
         write_cache(ck, df)
     return df
 
@@ -394,7 +438,8 @@ def fetch_history(
         try:
             if ft == "open_fund":
                 df = fetch_open_fund_nav(
-                    symbol=symbol, indicator=kwargs.get("indicator", "单位净值走势")
+                    symbol=symbol, indicator=kwargs.get("indicator", "单位净值走势"),
+                    adjust=kwargs.get("adjust", ""),
                 )
                 if not df.empty:
                     df = df.rename(columns={"单位净值": "收盘"})
