@@ -350,6 +350,11 @@ def render_intel_dca():
     st.markdown("---")
     st.markdown("### 🕰️ 历史回测验证 — 均线偏离法")
 
+    col_a, col_b = st.columns([1, 2])
+    total_budget = col_a.number_input(
+        "总投入本金上限 (元)", min_value=0, value=0, step=10000,
+        help="0 表示不设上限, 各策略实际总投入作为对比基准",
+    )
     bt_expander = st.expander("回测设置", expanded=True)
     with bt_expander:
         col1, col2 = st.columns(2)
@@ -358,10 +363,6 @@ def render_intel_dca():
         bt_weeks = col1.slider(
             "回测周数", min_value=12, max_value=max_bt_weeks or 12,
             value=min(52, max_bt_weeks or 52), step=4, key="bt_weeks",
-        )
-        total_budget = col2.number_input(
-            "总投入本金上限 (元)", min_value=0, value=0, step=10000,
-            help="0 表示不设上限, 各策略实际总投入作为对比基准",
         )
         col2.markdown("**策略**: 均线偏离法")
         run_bt = st.button("📊 运行回测", type="primary", use_container_width=True)
