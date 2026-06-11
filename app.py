@@ -24,6 +24,7 @@ from ui.symbol_manager import render_symbol_manager
 from ui.task_manager import render_task_manager
 from ui.sentiment import render_sentiment_dashboard
 from ui.intel_dca import render_intel_dca
+from ui.dashboard import render_home_dashboard
 
 
 # ══════════════════════════════════════════════════════════════
@@ -381,7 +382,7 @@ for key in ("rl_model_just_saved",):
 
 mode = st.radio(
     "_mode",
-    ["📊 定投回测", "🎯 网格搜索", "🧮 智能定投", "🤖 强化学习", "🧠 分层RL", "📊 情绪数据", "📋 训练任务", "📋 代码管理"],
+    ["🏠 首页", "📊 定投回测", "🎯 网格搜索", "🧮 智能定投", "🤖 强化学习", "🧠 分层RL", "📊 情绪数据", "📋 训练任务", "📋 代码管理"],
     horizontal=True,
     label_visibility="collapsed",
     key="mode_tab",
@@ -471,7 +472,9 @@ if needs_sidebar_symbol:
 #  主路由
 # ══════════════════════════════════════════════════════════════
 
-if mode == "📊 定投回测":
+if mode == "🏠 首页":
+    render_home_dashboard()
+elif mode == "📊 定投回测":
     render_dca_backtest(price_series, start_date, end_date)
 elif mode.startswith("📊 情绪"):
     render_sentiment_dashboard()
@@ -494,6 +497,6 @@ st.markdown("---")
 st.markdown(
     '<p class="footer-caption">'
     "⚠️ 本工具仅供学习研究使用，回测历史收益不代表未来表现，不构成任何投资建议。"
-    "数据来源：AKShare / 东方财富（A股）</p>",
+    "数据来源：AKShare / 新浪财经</p>",
     unsafe_allow_html=True,
 )

@@ -94,16 +94,10 @@ def _fetch_current_pe(symbol: str, price_series: pd.Series) -> Optional[float]:
     try:
         import akshare as ak
         if symbol.isdigit() and len(symbol) == 6:
-            df = ak.stock_a_lg_indicator(symbol=symbol)
-            if df is not None and not df.empty and "市盈率-动态" in df.columns:
-                val = df["市盈率-动态"].dropna().iloc[-1]
+            df = ak.stock_zh_valuation_baidu(symbol=symbol, indicator="市盈率(TTM)", period="近一年")
+            if df is not None and not df.empty and "value" in df.columns:
+                val = df["value"].dropna().iloc[-1]
                 return float(val)
-        df_idx = ak.stock_index_pe_pb()
-        if df_idx is not None and not df_idx.empty:
-            for col in ("pe", "市盈率", "滚动市盈率"):
-                if col in df_idx.columns:
-                    val = df_idx[col].dropna().iloc[-1]
-                    return float(val)
     except Exception:
         pass
     return None
