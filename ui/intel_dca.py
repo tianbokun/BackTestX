@@ -359,7 +359,10 @@ def render_intel_dca():
             "回测周数", min_value=12, max_value=max_bt_weeks or 12,
             value=min(52, max_bt_weeks or 52), step=4, key="bt_weeks",
         )
-        col2.markdown("")
+        total_budget = col2.number_input(
+            "总投入本金上限 (元)", min_value=0, value=0, step=10000,
+            help="0 表示不设上限, 各策略实际总投入作为对比基准",
+        )
         col2.markdown("**策略**: 均线偏离法")
         run_bt = st.button("📊 运行回测", type="primary", use_container_width=True)
 
@@ -374,6 +377,7 @@ def render_intel_dca():
                 adjustment_factor=ma_adjust,
                 lookback_weeks=bt_weeks,
                 trade_days_per_week=5,
+                total_budget=float(total_budget),
             )
 
         if bt_df.empty:
@@ -487,7 +491,7 @@ def render_intel_dca():
             st.plotly_chart(fig_dual, use_container_width=True)
 
             # ── 收益对比: 智能 vs 固定 vs 梭哈 ──
-            port_df = simulate_portfolios(bt_df, max_daily=float(max_amount))
+            port_df = simulate_portfolios(bt_df, max_daily=float(max_amount), total_budget=float(total_budget))
             if not port_df.empty:
                 st.markdown("### 📊 收益对比 (总投入本金对齐)")
 

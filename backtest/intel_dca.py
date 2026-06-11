@@ -639,10 +639,12 @@ def backtest_ma_deviation(
     adjustment_factor: float = 2.0,
     lookback_weeks: int = 52,
     trade_days_per_week: int = 5,
+    total_budget: float = 0,
 ) -> pd.DataFrame:
     """逐周回测均线偏离法, 无未来函数.
 
     每个时间点仅使用截止到该周的日线数据计算建议金额.
+    total_budget > 0 时限制总投入不超出此上限.
     """
     if not _safe_series(price_series, ma_period + 5):
         return pd.DataFrame()
@@ -679,6 +681,17 @@ def backtest_ma_deviation(
         })
     rows.reverse()
 
+    if total_budget > 0:
+        cumulative = 0.0
+        for i in range(len(rows)):
+            remaining = total_budget - cumulative
+            if remaining <= 0:
+                rows[i]["amount"] = 0.0
+                rows[i]["signal"] = "暂停"
+            else:
+                rows[i]["amount"] = min(rows[i]["amount"], remaining)
+            cumulative += rows[i]["amount"]
+
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
@@ -690,10 +703,12 @@ def simulate_portfolios(
     bt_df: pd.DataFrame,
     max_daily: float = 0,
     trade_days_per_week: int = 5,
+    total_budget: float = 0,
 ) -> pd.DataFrame:
-    """模拟三种策略的逐周收益率对比, 总投入本金一致.
+    """模拟四种策略的逐周收益率对比, 总投入本金一致.
 
     输入: backtest_ma_deviation 的返回 (含 date, price, amount 列).
+    total_budget > 0 时作为统一本金上限, 否则取智能定投实际总投入.
     返回: 每行 date / four portfolios' value, invested, return.
     """
     if bt_df.empty or len(bt_df) < 2:
@@ -703,7 +718,7 @@ def simulate_portfolios(
     prices = bt_df["price"].values
     smart_amounts = bt_df["amount"].values
     n = len(dates)
-    total_principal = smart_amounts.sum()
+    total_principal = total_budget if total_budget > 0 else smart_amounts.sum()
     fixed_amount = total_principal / n
     max_weekly = max_daily * trade_days_per_week
 
