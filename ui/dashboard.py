@@ -1,5 +1,6 @@
 import streamlit as st
 from data.pe_fetcher import get_latest_pe, get_pe_percentile, manual_set_pe
+from ui.ma_deviation import render_ma_deviation_section
 
 
 def _format_pct(pct):
@@ -19,11 +20,12 @@ def _pe_color(pe_value):
 
 
 def render_home_dashboard():
+    render_ma_deviation_section()
     st.subheader("🏠 首页")
 
     # ── 刷新 / 手动输入 ──
     cols = st.columns([1, 1, 3])
-    refresh = cols[0].button("🔄 刷新", type="secondary")
+    refresh = cols[0].button("🔄 刷新", type="secondary", key="pe_refresh")
     manual_mode = cols[1].button("✏️ 手动输入", type="secondary")
 
     pe_value = get_latest_pe(force_refresh=refresh)
