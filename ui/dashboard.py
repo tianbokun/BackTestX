@@ -20,7 +20,6 @@ def _pe_color(pe_value):
 
 
 def render_home_dashboard():
-    render_ma_deviation_section()
     st.subheader("🏠 首页")
 
     # ── 刷新 / 手动输入 ──
@@ -98,3 +97,10 @@ def render_home_dashboard():
         st.info("📊 当前 PE 适中 (20~30)")
     elif color == "normal" and pe_value is not None:
         st.success("📉 当前 PE 偏低 (＜20), 估值处于历史较低水平")
+
+    # ── 均线偏离监控（耗时操作放最后） ──
+    try:
+        with st.spinner("正在加载均线偏离数据..."):
+            render_ma_deviation_section()
+    except Exception:
+        pass

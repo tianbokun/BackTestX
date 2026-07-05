@@ -4,7 +4,6 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import torch
 
 from backtest.rl.task_manager import TaskManager, TaskStatus
 from backtest.rl.dqn_agent import DQNAgent
@@ -996,6 +995,12 @@ def _select_task(tid: str):
 
 
 def render_task_manager():
+    try:
+        import torch
+    except ImportError as e:
+        st.error(f"PyTorch 加载失败，训练任务管理功能不可用：{e}")
+        st.info("请检查 PyTorch 安装：`pip install torch` 或参考 https://pytorch.org/get-started/")
+        st.stop()
     _render_model_browser()
     st.title("📋 训练任务管理")
     mgr = TaskManager()

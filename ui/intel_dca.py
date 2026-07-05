@@ -1,3 +1,4 @@
+import time
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -81,12 +82,21 @@ def render_intel_dca():
             key="intel_end",
         )
 
+    # ── 刷新控制 ──
+    refresh_col, _ = st.columns([1, 8])
+    refresh = refresh_col.button("🔄 刷新数据", type="secondary", key="intel_refresh")
+    if "intel_rk" not in st.session_state:
+        st.session_state.intel_rk = 0.0
+    if refresh:
+        st.session_state.intel_rk = time.time()
+    refresh_key = st.session_state.intel_rk
+
     # ── 获取数据 ──
     with st.spinner("正在获取数据..."):
         try:
             start_str = start_date.strftime("%Y%m%d")
             end_str = end_date.strftime("%Y%m%d")
-            df = cached_fetch(selected, entry["asset_type"], start_str, end_str, adjust)
+            df = cached_fetch(selected, entry["asset_type"], start_str, end_str, adjust, _refresh_key=refresh_key)
         except Exception as e:
             st.error(f"数据获取失败: {e}")
             return

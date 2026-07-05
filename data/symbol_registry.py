@@ -1,9 +1,67 @@
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Iterable
 from datetime import date
 
 REGISTRY_PATH = Path(__file__).parent / "symbol_registry.json"
+
+CACHE_KEY_PATTERNS: dict[str, list[tuple[str, ...]]] = {
+    "stock": [
+        ("stock", "{sym}", period, adj)
+        for period in ("daily", "weekly", "monthly")
+        for adj in ("", "qfq", "hfq")
+    ] + [
+        ("open_fund", "{sym}", "单位净值走势"),
+        ("open_fund", "{sym}", "单位净值走势", "qfq"),
+    ],
+    "etf": [
+        ("etf", "{sym}", period, adj)
+        for period in ("daily", "weekly", "monthly")
+        for adj in ("", "qfq", "hfq")
+    ] + [
+        ("open_fund", "{sym}", "单位净值走势"),
+        ("open_fund", "{sym}", "单位净值走势", "qfq"),
+    ],
+    "lof": [
+        ("lof", "{sym}", period, adj)
+        for period in ("daily", "weekly", "monthly")
+        for adj in ("", "qfq", "hfq")
+    ] + [
+        ("open_fund", "{sym}", "单位净值走势"),
+        ("open_fund", "{sym}", "单位净值走势", "qfq"),
+    ],
+    "open_fund": [
+        ("open_fund", "{sym}", ind, adj)
+        for ind in ("单位净值走势", "累计净值走势")
+        for adj in ("", "qfq")
+    ] + [
+        ("open_fund", "{sym}", "daily"),
+        ("open_fund", "{sym}", "daily", "qfq"),
+    ],
+    "index": [
+        ("index", "{sym}"),
+    ],
+    "us": [
+        ("us", "{sym}", period)
+        for period in ("1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max")
+    ],
+}
+
+
+def _clear_symbol_cache(symbol: str, asset_type: str):
+    from data.cache import cache_key, CACHE_DIR
+
+    patterns = CACHE_KEY_PATTERNS.get(asset_type, [])
+    seen: set[str] = set()
+    for parts_tmpl in patterns:
+        parts = tuple(p.replace("{sym}", symbol) for p in parts_tmpl)
+        key = cache_key(*parts)
+        if key in seen:
+            continue
+        seen.add(key)
+        fpath = CACHE_DIR / f"{key}.parquet"
+        if fpath.exists():
+            fpath.unlink()
 
 
 def _load() -> dict:
@@ -73,10 +131,13 @@ class SymbolRegistry:
     @staticmethod
     def remove(symbol: str) -> bool:
         registry = _load()
+        entry = SymbolRegistry.get(symbol)
         before = len(registry["symbols"])
         registry["symbols"] = [s for s in registry["symbols"] if s["symbol"] != symbol]
         if len(registry["symbols"]) < before:
             _save(registry)
+            if entry is not None:
+                _clear_symbol_cache(symbol, entry["asset_type"])
             return True
         return False
 

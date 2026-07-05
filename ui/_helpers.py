@@ -8,7 +8,7 @@ COLORS = [
 
 
 @st.cache_data(ttl=300, show_spinner="正在获取数据...")
-def cached_fetch(symbol, asset_type, start_str, end_str, adjust):
+def cached_fetch(symbol, asset_type, start_str, end_str, adjust, _refresh_key=0):
     return fetch_history(
         asset_type=asset_type, symbol=symbol,
         start_date=start_str, end_date=end_str, adjust=adjust,

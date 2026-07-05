@@ -297,19 +297,16 @@ def fetch_lof_history(
 # ══════════════════════════════════════════
 
 def _forward_adjust_nav(nav_df: pd.DataFrame, adjust: str) -> pd.DataFrame:
-    if adjust != "qfq" or nav_df.empty or "单位净值" not in nav_df.columns:
+    if adjust != "qfq" or nav_df.empty or "单位净值" not in nav_df.columns or "累计净值" not in nav_df.columns:
         return nav_df
-    df = nav_df.copy()
-    s = df["单位净值"]
-    ratio = s / s.shift(1)
-    events = ratio[(ratio < 0.8) | (ratio > 1.25)]
-    if events.empty:
-        return nav_df
-    cumulative = 1.0
-    for idx in reversed(sorted(events.index)):
-        cumulative *= events[idx]
-        s.loc[s.index < idx] *= cumulative
-    df["单位净值"] = s
+    df = nav_df.copy().sort_index()
+    u = df["单位净值"]
+    a = df["累计净值"]
+    factor = (u * a.shift(1)) / (u.shift(1) * a)
+    factor.iloc[0] = 1.0
+    factor[factor.between(1 - 1e-4, 1 + 1e-4)] = 1.0
+    rev_cp = factor.iloc[::-1].cumprod().iloc[::-1]
+    df["单位净值"] = u * (rev_cp / factor)
     return df
 
 
@@ -329,6 +326,15 @@ def fetch_open_fund_nav(
         df[date_col] = pd.to_datetime(df[date_col])
         df.set_index(date_col, inplace=True)
         if adjust:
+            try:
+                cum_df = ak.fund_open_fund_info_em(symbol=symbol, indicator="累计净值走势", period="成立来")
+                if not cum_df.empty:
+                    cdate_col = [c for c in cum_df.columns if "日期" in c][0]
+                    cum_df[cdate_col] = pd.to_datetime(cum_df[cdate_col])
+                    cum_df.set_index(cdate_col, inplace=True)
+                    df["累计净值"] = cum_df["累计净值"]
+            except Exception:
+                pass
             df = _forward_adjust_nav(df, adjust)
         write_cache(ck, df)
     return df

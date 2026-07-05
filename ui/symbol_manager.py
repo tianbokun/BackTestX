@@ -1,7 +1,8 @@
+import time
 import streamlit as st
 import pandas as pd
 
-from data.symbol_registry import SymbolRegistry
+from data.symbol_registry import SymbolRegistry, _clear_symbol_cache
 
 
 def render_symbol_manager():
@@ -122,13 +123,19 @@ def render_symbol_manager():
                     st.caption("同步数据")
                     if st.button("🔄 立即同步", key=f"sync_{s['symbol']}"):
                         with st.spinner(f"正在获取 {s['symbol']} 数据..."):
-                            df = SymbolRegistry.fetch_data(s["symbol"])
+                            try:
+                                _clear_symbol_cache(s["symbol"], s["asset_type"])
+                                st.cache_data.clear()
+                                df = SymbolRegistry.fetch_data(s["symbol"])
+                            except Exception as e:
+                                st.error(f"同步失败: {e}")
+                                df = None
                         if df is not None and not df.empty:
                             st.success(f"同步完成: {len(df)} 行, "
                                        f"{str(df.index[0])[:10]} ~ {str(df.index[-1])[:10]}")
                             st.rerun()
-                        else:
-                            st.error("同步失败")
+                        elif df is not None:
+                            st.error("同步失败: 返回数据为空")
 
     if selected:
         n = len(selected)

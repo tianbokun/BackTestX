@@ -1,7 +1,6 @@
 from pathlib import Path
 from datetime import datetime
 
-import torch
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -137,6 +136,12 @@ def _hyperparam_search_task(params, task_id=None, cancel_check=None):
 
 
 def render_rl_training(end_date, adjust):
+    try:
+        import torch
+    except ImportError as e:
+        st.error(f"PyTorch 加载失败，强化学习功能不可用：{e}")
+        st.info("请检查 PyTorch 安装：`pip install torch` 或参考 https://pytorch.org/get-started/")
+        st.stop()
     st.title("🤖 DQN 强化学习训练系统")
 
     st.sidebar.markdown("### 🤖 强化学习参数")
